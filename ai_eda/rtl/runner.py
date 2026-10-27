@@ -408,10 +408,16 @@ def test_rtl(
                     text=True, capture_output=True, timeout=timeout_seconds, check=False,
                 )
                 if power_compile.returncode == 0:
-                    subprocess.run(
-                        ["vvp", str(power_executable), f"+vcd={vcd_path.resolve()}"],
+                    # Icarus 的 $dumpfile 处理不了含非 ASCII 字符的路径；run 目录
+                    # 通常位于中文路径下，因此让 vvp 先写到纯 ASCII 的临时文件，
+                    # 再复制进运行记录，否则 VCD 会被静默写到默认的 dump.vcd。
+                    dumped_vcd = temp_path / "activity.vcd"
+                    power_run = subprocess.run(
+                        ["vvp", str(power_executable), f"+vcd={dumped_vcd.resolve()}"],
                         text=True, capture_output=True, timeout=timeout_seconds, check=False,
                     )
+                    if dumped_vcd.is_file():
+                        shutil.copy2(dumped_vcd, vcd_path)
             report["metrics"] = synthesize_metrics(
                 rtl_path,
                 vcd_path=vcd_path,
@@ -562,15 +568,28 @@ def evaluate_metrics(run_dir: Path) -> dict[str, Any]:
                     text=True, capture_output=True, timeout=timeout_seconds, check=False,
                 )
                 if compile_result.returncode == 0:
-                    subprocess.run(
-                        ["vvp", str(executable), f"+vcd={vcd_path.resolve()}"],
+                    # Icarus 的 $dumpfile 处理不了含非 ASCII 字符的路径；run 目录
+                    # 通常位于中文路径下，因此让 vvp 先写到纯 ASCII 的临时文件，
+                    # 再复制进运行记录，否则 VCD 会被静默写到默认的 dump.vcd。
+                    dumped_vcd = temp_path / "activity.vcd"
+                    power_run = subprocess.run(
+                        ["vvp", str(executable), f"+vcd={dumped_vcd.resolve()}"],
                         text=True, capture_output=True, timeout=timeout_seconds, check=False,
                     )
-                    metrics = synthesize_metrics(
-                        rtl_path,
-                        vcd_path=vcd_path,
-                        vcd_scope=f"{power_testbench_top}/dut",
-                    )
+                    if dumped_vcd.is_file():
+                        shutil.copy2(dumped_vcd, vcd_path)
+                        metrics = synthesize_metrics(
+                            rtl_path,
+                            vcd_path=vcd_path,
+                            vcd_scope=f"{power_testbench_top}/dut",
+                        )
+                    else:
+                        metrics = {
+                            "status": "failed",
+                            "reason": "功耗仿真没有生成 VCD 活动文件。",
+                            "stdout": power_run.stdout[-4000:],
+                            "stderr": power_run.stderr[-4000:],
+                        }
                 else:
                     metrics = {
                         "status": "failed",
