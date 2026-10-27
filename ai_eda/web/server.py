@@ -187,8 +187,9 @@ def _generation_options(
     if not 0 <= temperature <= 2:
         raise ValueError("temperature 必须在 0 到 2 之间")
     max_tokens = int(request.get("max_tokens", default_max_tokens))
-    if not 64 <= max_tokens <= 16384:
-        raise ValueError("max_tokens 必须在 64 到 16384 之间")
+    # 上限对齐模型服务端的硬限制（ModelClient 也会再钳制一次兜底）。
+    if not 64 <= max_tokens <= ModelClient.MAX_TOKENS_LIMIT:
+        raise ValueError(f"max_tokens 必须在 64 到 {ModelClient.MAX_TOKENS_LIMIT} 之间")
     thinking = bool(request.get("thinking", False))
     reasoning_effort = str(request.get("reasoning_effort", "high"))
     if reasoning_effort not in {"low", "high", "max"}:

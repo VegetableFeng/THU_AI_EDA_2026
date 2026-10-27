@@ -28,6 +28,9 @@ class ModelClient:
     # 如需更强的复杂 RTL / Agent 推理能力，可将上一行改为：
     # MODEL_NAME = "deepseek-v4-pro"
 
+    # 模型服务端对单次输出 max_tokens 的硬上限（超出会被 400 invalid_request_error 拒绝）。
+    MAX_TOKENS_LIMIT = 393216
+
     def __init__(
         self,
         temperature: float = 0.2,
@@ -45,7 +48,8 @@ class ModelClient:
         api_key, _key_source = resolve_api_key()
 
         self.temperature = temperature
-        self.max_tokens = max_tokens
+        # 超过服务端上限的值按上限发送，避免整个请求被 400 拒绝。
+        self.max_tokens = min(max_tokens, self.MAX_TOKENS_LIMIT)
         self.thinking = thinking
         self.reasoning_effort = reasoning_effort
         self.client = OpenAI(api_key=api_key, base_url=self.BASE_URL)
@@ -80,7 +84,7 @@ class ModelClient:
             details.append(f"thinking=enabled，reasoning_effort={self.reasoning_effort}")
         if finish_reason == "length":
             suggestion = (
-                "思考模式和长 RTL 都会消耗输出预算：请提高 max_tokens（默认 60000，可按需继续增大），"
+                "思考模式和长 RTL 都会消耗输出预算：请提高 max_tokens（默认 60000，服务端上限 393216），"
                 "或在只需要 RTL 时关闭 thinking 后重试。"
             )
         else:
