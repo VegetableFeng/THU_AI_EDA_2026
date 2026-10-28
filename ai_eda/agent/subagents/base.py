@@ -86,7 +86,13 @@ class RunContext:
         self.model_calls += 1
         event["call_index"] = self.model_calls
         event["conversation_messages"] = len(messages)
-        client = self.make_client(model_options)
+        merged_options = dict(model_options or {})
+        # 节点级思维链开关：运行配置里针对本节点的显式设置优先于类默认值。
+        node_thinking = self.options.get("node_thinking") or {}
+        node_id = event.get("node_id")
+        if isinstance(node_thinking, dict) and isinstance(node_thinking.get(node_id), bool):
+            merged_options["thinking"] = node_thinking[node_id]
+        client = self.make_client(merged_options)
         answer_parts: list[str] = []
         reasoning_parts: list[str] = []
         usage: dict[str, Any] | None = None

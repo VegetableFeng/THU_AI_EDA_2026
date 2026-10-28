@@ -35,11 +35,19 @@
       "y": 200
     },
     {
-      "id": "modifier",
+      "id": "diagnoser",
       "type": "model",
-      "title": "05 · Modifier",
-      "prompt": "Repair RTL from the Tester failure report, then return to Tester for verification.",
-      "x": 960,
+      "title": "05 · Diagnoser",
+      "prompt": "Read the filtered failure brief and the file inventory; locate the root cause and write a failure packet: category, failing checks, involved files (a small subset), and repair constraints.",
+      "x": 1264,
+      "y": 200
+    },
+    {
+      "id": "patch",
+      "type": "model",
+      "title": "06 · Patch",
+      "prompt": "Repair only the involved files listed in the failure packet, honoring its repair constraints; never repeat a disproved hypothesis. Then return to Tester for verification.",
+      "x": 1104,
       "y": 8,
       "retry": {
         "target": "tester",
@@ -62,7 +70,15 @@
     },
     {
       "from": "tester",
-      "to": "modifier"
+      "to": "diagnoser"
+    },
+    {
+      "from": "diagnoser",
+      "to": "patch"
+    },
+    {
+      "from": "patch",
+      "to": "tester"
     }
   ]
 }

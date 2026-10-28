@@ -147,7 +147,6 @@ function bindEvents() {
     });
   };
   warnThinkingBudget($("#thinking"), $("#max-tokens"));
-  warnThinkingBudget($("#agent-thinking"), $("#agent-max-tokens"));
   warnThinkingBudget($("#hw-thinking"), $("#hw-max-tokens"));
   $("#params-demos").addEventListener("click", (event) => {
     const button = event.target.closest("[data-param-run]");

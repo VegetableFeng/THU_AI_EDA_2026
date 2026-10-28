@@ -35,10 +35,32 @@ class PlannerAgent(SubAgent):
                 "必须把 architecture 字段原样写入计划，并要求所有 Coder 严格遵守其中的 coder_directives：\n"
                 f"{json.dumps(skill_result, ensure_ascii=False, indent=2)}\n"
             )
+        evolution = self.runtime.options.get("evolution")
+        evolution_prompt = ""
+        if isinstance(evolution, dict) and evolution.get("inventory"):
+            old_plan = evolution.get("old_plan")
+            evolution_prompt = (
+                "\n\n本次运行为跨等级进化：项目已包含上一等级通过教师 TB 验收的实现文件，清单如下：\n"
+                + json.dumps(evolution.get("inventory"), ensure_ascii=False, indent=2)
+                + "\n请尽量复用已满足新 Spec 的模块：对应 module 置 \"reuse\": true 并保持 file 与接口不变；"
+                "只为新增能力或必须重写的模块规划新文件（reuse 置 false 或缺省）。"
+                "最终计划必须包含整个项目的全部模块（复用 + 新增），新模块与复用模块的接口必须一致。\n"
+                + (
+                    "上一等级的计划（可继承接口定义）：\n"
+                    + json.dumps(old_plan, ensure_ascii=False, indent=2)
+                    + "\n"
+                    if isinstance(old_plan, dict)
+                    else ""
+                )
+            )
         prompt = (
             "根据下面的 Spec 规划 RTL 项目的模块与文件结构。每个模块必须能由一个文件独立实现；"
             "所有模块最终会一起用教师 TB 编译验收。每个 module 的 interfaces 必须写全端口名、方向、位宽；"
             "跨模块信号在两端必须使用同名、同方向、同宽度，不能只写一句总结。\n"
+            "时序职责分配：把复位、冒险与停顿（load-use/结构冒险）、冲刷、ECALL 停机提交、"
+            "握手等待等时序逻辑显式分配到明确的模块（如 hazard_unit、wb_stage），"
+            "并在该模块的 description 中写明它承担哪些时序职责，避免多个模块各写一套互相打架。\n"
+            + evolution_prompt
             + skill_prompt
             + f"\nSpec：\n{effective_spec}\n\n"
             "请只返回约定的 JSON 对象。"

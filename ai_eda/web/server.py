@@ -226,6 +226,13 @@ def _agent_options(request: dict[str, Any]) -> dict[str, Any]:
     reasoning_effort = str(request.get("reasoning_effort", "low"))
     if reasoning_effort not in {"low", "high", "max"}:
         raise ValueError("reasoning_effort 无效")
+    allowed_nodes = {"parser", "planner", "coder", "diagnoser", "patch"}
+    node_thinking_raw = request.get("node_thinking")
+    node_thinking: dict[str, bool] = {}
+    if isinstance(node_thinking_raw, dict):
+        for key, value in node_thinking_raw.items():
+            if key in allowed_nodes and isinstance(value, bool):
+                node_thinking[key] = value
     temperature = float(request.get("temperature", 0.2))
     if not 0 <= temperature <= 2:
         raise ValueError("temperature 必须在 0 到 2 之间")
@@ -261,6 +268,7 @@ def _agent_options(request: dict[str, Any]) -> dict[str, Any]:
     project_id = _project_id_from_request(request)
     return {
         "thinking": thinking,
+        "node_thinking": node_thinking,
         "reasoning_effort": reasoning_effort,
         "temperature": temperature,
         "max_tokens": max_tokens,

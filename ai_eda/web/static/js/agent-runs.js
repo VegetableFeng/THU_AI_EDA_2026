@@ -305,6 +305,9 @@ function updateAgentRunStatus(job) {
     const [label] = statusMeta(result.status);
     const tokens = totalTokens(result.events);
     $("#agent-run-status").textContent = `${label} · ${result.run_id} · ${formatDuration(result.duration_ms)}${tokens ? ` · ${tokens} tok` : ""}`;
+    // 跑完自动回填 run ID，方便渐进链：切到下一等级项目后直接 Run Agent。
+    const resumeInput = $("#agent-resume-from");
+    if (resumeInput) resumeInput.value = result.run_id;
   } else {
     $("#agent-run-status").textContent = "Ready · click Run Agent";
   }
@@ -339,10 +342,10 @@ function scheduleAgentSave() {
 }
 
 function resumableAgentRun() {
-  const failedStatuses = new Set(["failed", "cancelled", "error"]);
+  const terminalStatuses = new Set(["passed", "failed", "cancelled", "error"]);
   const current = state.agent.run;
-  if (current?.run_id && failedStatuses.has(current.status)) return current;
-  const run = (state.agent.runs || []).find((item) => item.run_id && failedStatuses.has(item.status));
+  if (current?.run_id && terminalStatuses.has(current.status)) return current;
+  const run = (state.agent.runs || []).find((item) => item.run_id && terminalStatuses.has(item.status));
   return run || null;
 }
 
@@ -353,14 +356,18 @@ function updateResumeButton() {
   const visible = Boolean(source) && !state.agent.running;
   button.classList.toggle("hidden", !visible);
   button.disabled = !visible;
-  button.title = source ? "Continue Coder from the previous Spec/Plan" : "No resumable failed run";
+  button.title = source
+    ? source.status === "passed"
+      ? "Evolve: reuse this passed run's RTL as the base for the selected project"
+      : "Continue from the failure point (Tester / Diagnoser)"
+    : "No resumable run";
 }
 
 async function resumeAgentRun() {
   if (state.agent.running) return;
   const source = resumableAgentRun();
   if (!source?.run_id) {
-    showToast("No resumable failed run", "warning");
+    showToast("No resumable run", "warning");
     return;
   }
   await runAgent(source.run_id);
@@ -368,7 +375,8 @@ async function resumeAgentRun() {
 
 async function runAgent(resumeFrom = null) {
   if (!agentGraph() || state.agent.running) return;
-  const resumeId = typeof resumeFrom === "string" && resumeFrom ? resumeFrom : null;
+  const manualResume = $("#agent-resume-from")?.value.trim() || "";
+  const resumeId = (typeof resumeFrom === "string" && resumeFrom) || manualResume || null;
   state.agent.running = true;
   state.agent.cancelling = false;
   state.agent.job = null;
@@ -392,7 +400,13 @@ async function runAgent(resumeFrom = null) {
     const job = await api("/api/agent/jobs", {
       method: "POST",
       body: JSON.stringify({
-        thinking: $("#agent-thinking").checked,
+        node_thinking: {
+          parser: $("#agent-thinking-parser")?.checked ?? true,
+          planner: $("#agent-thinking-planner")?.checked ?? true,
+          coder: $("#agent-thinking-coder")?.checked ?? false,
+          diagnoser: $("#agent-thinking-diagnoser")?.checked ?? true,
+          patch: $("#agent-thinking-patch")?.checked ?? false,
+        },
         temperature: Number($("#agent-temperature").value),
         max_tokens: Number($("#agent-max-tokens").value || 60000),
         max_calls: Number($("#agent-max-calls")?.value || 100),

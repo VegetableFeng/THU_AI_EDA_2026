@@ -10,7 +10,15 @@ from ai_eda.rtl.runner import extract_rtl
 from ai_eda.agent.skills.rv32i5_l1_reference import load_reference
 
 from .base import SubAgent
-from .common import RV32I_L1_CODE_PATTERNS, RV32I_PIPELINE_CHECKLIST, safe_project_path
+from .common import (
+    CODER_SELF_CHECK,
+    CODER_SELF_CHECK_RV32I,
+    RV32I_ADVANCED_TIMING,
+    RV32I_L1_CODE_PATTERNS,
+    RV32I_PIPELINE_CHECKLIST,
+    RV32I_TIMING_CONSTRAINTS,
+    safe_project_path,
+)
 
 
 def _architecture_block(plan: dict) -> str:
@@ -65,7 +73,27 @@ class CoderAgent(SubAgent):
         )
         files: dict[str, str] = {}
         existing = existing_files or {}
-        reference = load_reference(str((self.runtime.options.get("project") or {}).get("id") or ""))
+        reference = load_reference(str(project_id))
+        # 参考实现存在时：一次性写入全部参考文件（包括 plan 未列出的辅助模块，
+        # 如 rv32i5_l1 的 alu），保证参考集内部接口自洽；plan 中对应模块直接跳过。
+        # 参考文件优先于上一等级的复用文件，避免两套实现的端口约定混搭。
+        if reference:
+            for path, content in sorted(reference.items()):
+                target = safe_project_path(self.runtime.run_dir, path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                files[path] = content
+            event = self.runtime.begin_event(
+                "coder",
+                self.node_type,
+                f"{self.title} · reference files",
+                f"Write {len(reference)} reference files (course-verified fallback).",
+            )
+            self.finish(
+                event,
+                "info",
+                response=f"Wrote {len(reference)} reference files: " + "、".join(sorted(reference)),
+            )
         modules = plan["modules"]
         start_index = 0
         if start_module:
@@ -79,32 +107,55 @@ class CoderAgent(SubAgent):
                 files[module["file"]] = existing[module["file"]]
                 continue
             if module["file"] in reference:
-                rtl = reference[module["file"]]
-                target = safe_project_path(self.runtime.run_dir, module["file"])
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(rtl, encoding="utf-8")
-                files[module["file"]] = rtl
+                # 参考文件已随参考集统一写入，直接沿用。
+                continue
+            if module.get("reuse") and module["file"] in existing:
+                # 进化模式：Planner 标记复用的模块直接沿用上一等级的实现。
+                files[module["file"]] = existing[module["file"]]
                 event = self.runtime.begin_event(
-                    "coder", self.node_type, f"{self.title} · {module['name']}", "参考实现"
+                    "coder",
+                    self.node_type,
+                    f"{self.title} · {module['name']} (reuse)",
+                    "Reuse existing implementation from the previous level.",
                 )
                 self.finish(
                     event,
                     "info",
-                    response=f"Wrote {module['file']} (L1 reference, {len(rtl)} chars).",
+                    response=f"Reused {module['file']} from previous level ({len(existing[module['file']])} chars).",
                 )
                 continue
+            if project_id.startswith("rv32i5"):
+                timing_block = RV32I_TIMING_CONSTRAINTS
+                if project_id in {"rv32i5_l2_predict", "rv32i5_l3_ooo"}:
+                    timing_block += "\n" + RV32I_ADVANCED_TIMING
+                self_check = CODER_SELF_CHECK + "\n" + CODER_SELF_CHECK_RV32I
+            else:
+                timing_block = (
+                    "1. valid/ready 握手：请求发出后 valid 与载荷必须保持到 ready，未 ready 时不得变更请求。\n"
+                    "2. 复位为同步低有效，复位后各输出符合 Spec 的初始状态。"
+                )
+                self_check = CODER_SELF_CHECK
             prompt = (
                 f"请实现项目中模块 `{module['name']}`，写入文件 `{module['file']}`。"
-                "只输出该文件的完整 SystemVerilog RTL，不要输出 Markdown 围栏或解释。\n\n"
-                "项目计划（必须严格遵守 modules[].interfaces 的端口名/方向/位宽；"
-                "跨模块信号在该模块中也必须使用同一套名称和宽度，不能自行改名或增删端口）。\n"
+                "只输出该文件的完整 SystemVerilog RTL：不要输出 Markdown 围栏、解释文字或额外模块。\n\n"
+                "一、接口约束（必须逐字符遵守）\n"
+                "模块端口与跨模块信号以计划 interfaces 为准：名称/方向/位宽不得改名或增删；"
+                "端口列表已声明的信号不得在模块体内重复声明；每个信号只能有一个 driver。\n\n"
+                "二、微架构与实现要点\n"
                 + architecture_block
-                + "语法自检：端口列表已经声明的 output/input 信号不要在模块体内再次用 logic/wire 声明；"
-                "每个信号只能有一个 driver；不要出现重复声明或多驱动。\n"
+                + project_checklist
+                + "\n三、时序约束（教师 TB 逐项检查，违反任何一条都会失败）\n"
+                + timing_block
+                + "\n\n四、可综合性约束\n"
+                "时序逻辑用 always_ff @(posedge clk)；组合逻辑用 always_comb 且全分支赋值无锁存器；"
+                "function 内禁止 SystemVerilog return（用函数名赋值）；不使用 typedef enum、"
+                "class、interface、断言、动态数组；复位为同步低有效，禁止 negedge rst_n 写法。\n\n"
+                "五、项目计划与 Spec\n"
+                f"本模块说明：{module['description']}\n本模块接口契约：{module['interfaces']}\n"
                 f"{json.dumps(plan, ensure_ascii=False, indent=2)}\n\n"
                 f"Spec：\n{effective_spec}\n\n"
-                f"本模块说明：{module['description']}\n本模块接口契约：{module['interfaces']}"
-                + project_checklist
+                "六、生成后自查（逐条确认全部通过后再输出）\n"
+                + self_check
             )
             event = self.runtime.begin_event(
                 "coder", self.node_type, f"{self.title} · {module['name']}", prompt

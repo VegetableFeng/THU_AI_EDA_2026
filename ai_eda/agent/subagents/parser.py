@@ -43,7 +43,7 @@ class ParserAgent(SubAgent):
                 "以及是否足以规划模块与文件结构。只对阻断项提问：顶层端口/复位/时钟/ISA/"
                 "外部总线行为/ECALL 停机/文件与测试预期/不可实现的矛盾。"
                 "内部模块端口、FSM、Cache refill 仲裁、预测器编码、ROB 内部结构等"
-                "属于 Planner/Coder/Modifier 的实现自由，不要因此提问；把必要假设写进 spec_addendum。\n\n"
+                "属于 Planner/Coder/Patch 的实现自由，不要因此提问；把必要假设写进 spec_addendum。\n\n"
                 "固定 Spec：\n"
                 f"{spec_base}\n\n"
                 "用户补充：\n"

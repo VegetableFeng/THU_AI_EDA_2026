@@ -1,6 +1,7 @@
 """固定 Agent 流程的受限 EDA 自动设计执行器。
 
-固定流水线：Parser → RTL Planner → Coder → Tester → Modifier（失败回环）。
+固定流水线：Parser → RTL Planner → Coder → Tester → Diagnoser → Patch（失败回环 Tester）。
+Tester 失败后由 Diagnoser 产出 failure packet，Patch 只在 packet 圈定的涉及文件上修复。
 Parser 需要补充 Spec 时通过 ``request_input`` 暂停并等待用户输入。
 """
 
@@ -27,8 +28,9 @@ from ai_eda.agent.runs import (
 from ai_eda.agent.subagents.base import RunContext
 from ai_eda.agent.subagents.coder import CoderAgent
 from ai_eda.agent.subagents.common import safe_project_path
-from ai_eda.agent.subagents.modifier import ModifierAgent
+from ai_eda.agent.subagents.diagnoser import DiagnoserAgent
 from ai_eda.agent.subagents.parser import ParserAgent
+from ai_eda.agent.subagents.patch import PatchAgent
 from ai_eda.agent.subagents.planner import PlannerAgent
 from ai_eda.agent.subagents.tester import TesterAgent
 from ai_eda.config import AGENT_RUNS_ROOT
@@ -112,27 +114,33 @@ def _load_resume_source(run_id: str) -> dict[str, Any]:
         "event": failed_event,
         "project_files": project_files,
         "source_status": events_payload.get("status"),
+        "project_id": events_payload.get("project_id"),
     }
 
 
-def _seed_modifier_input(
+def _seed_diagnoser_input(
     context: RunContext,
     source: dict[str, Any],
     spec_ref: str,
     plan_ref: str,
     manifest_ref: str,
 ) -> Path:
-    """为从 Modifier 失败点续跑重建 Tester → Modifier 输入。"""
+    """为从修复环节失败点续跑重建 Tester → Diagnoser 输入。
+
+    兼容旧命名：旧版运行的交接文件是 tester_to_modifier_attempt*.json。
+    """
     source_dir = source["source"]
-    candidates = sorted((source_dir / "handoffs").glob("tester_to_modifier_attempt*.json"))
+    candidates = sorted(
+        (source_dir / "handoffs").glob("tester_to_diagnoser_attempt*.json")
+    ) or sorted((source_dir / "handoffs").glob("tester_to_modifier_attempt*.json"))
     if not candidates:
-        raise ValueError("上一次运行没有 Tester → Modifier handoff，无法从 Modifier 续跑")
+        raise ValueError("上一次运行没有 Tester 失败交接，无法从修复环节续跑")
     record = json.loads(candidates[-1].read_text(encoding="utf-8"))
     payload = record.get("payload") if isinstance(record, dict) else None
     artifacts = (payload or {}).get("artifacts") or {}
     source_report_ref = artifacts.get("report")
     if not isinstance(source_report_ref, str):
-        raise ValueError("上一次运行缺少失败报告，无法从 Modifier 续跑")
+        raise ValueError("上一次运行缺少失败报告，无法从修复环节续跑")
     source_report = (source_dir / source_report_ref).resolve()
     if source_dir.resolve() not in source_report.parents or not source_report.is_file():
         raise ValueError("上一次运行的失败报告路径无效")
@@ -140,7 +148,7 @@ def _seed_modifier_input(
     report_ref = context.write_json_artifact("resume_report.json", report)
     return context.write_handoff(
         "tester",
-        "modifier",
+        "diagnoser",
         {
             "attempt": 1,
             "summary": (payload or {}).get("summary") or "上一轮 Tester 失败",
@@ -152,7 +160,7 @@ def _seed_modifier_input(
             },
         },
         attempt=1,
-        label=f"Resume {source['run_id']}: continue from Modifier",
+        label=f"Resume {source['run_id']}: continue from Diagnoser",
     )
 
 
@@ -211,6 +219,7 @@ def run_agent(
     max_repair_attempts: int = 8,
     planner_skill: bool = False,
     resume_from: str | None = None,
+    node_thinking: dict[str, bool] | None = None,
     on_event: EventSink | None = None,
     cancel_event: Any = None,
     design_id: str | None = None,
@@ -218,10 +227,12 @@ def run_agent(
     project_id: str | None = None,
     request_input: Callable[[dict[str, Any]], str] | None = None,
 ) -> dict[str, Any]:
-    """运行固定流水线：Parser → Planner → Coder → Tester ⇄ Modifier。
+    """运行固定流水线：Parser → Planner → Coder → Tester ⇄ Diagnoser → Patch。
 
     ``graph.json`` 只是该固定流程的只读可视化，不参与调度。每个 Agent 都从上游
     handoff 中取得 artifact 引用，再按引用读取 Spec、RTL 或报告内容。
+    Tester 失败后，Diagnoser 把筛选后的失败证据压缩为 failure packet 并圈定
+    涉及文件，Patch 只在该最小文件集合上产出修复，再交回 Tester 复验。
     """
     graph = load_agent_graph()
     if reasoning_effort not in {"low", "high", "max"}:
@@ -319,6 +330,7 @@ def run_agent(
                 "max_tokens": max_tokens,
                 "thinking": thinking,
                 "reasoning_effort": reasoning_effort,
+                "node_thinking": dict(node_thinking or {}),
                 "planner_skill": bool(planner_skill),
                 "project": project,
             },
@@ -332,20 +344,58 @@ def run_agent(
         )
         if resume_from:
             resume_source = _load_resume_source(resume_from)
-            effective_spec = resume_source["spec"]
-            plan = resume_source["plan"]
-            parser_result = resume_source.get("parser_result") or {}
-            resume_stage = str(resume_source.get("stage") or "coder")
-            if resume_stage == "modifier":
-                # 续跑从 Modifier 输入开始；随后第一次 Tester 应使用第 2 轮，
-                # 避免与 seed 的 tester_to_modifier_attempt1.json 重名。
+            # 渐进链进化模式：上一次运行已通过、且目标项目等级不同（如 L0 → L1），
+            # 则以上一次的 RTL 为现有工程，按新等级的 Spec 重新 Parser/Planner/Coder。
+            evolution = (
+                resume_source.get("source_status") == "passed"
+                and resume_source.get("project_id") not in (None, project["id"])
+            )
+            if evolution:
+                resume_stage = "evolution"
+                effective_spec = spec_base
+                plan = None
+                parser_result = {}
+            else:
+                effective_spec = resume_source["spec"]
+                plan = resume_source["plan"]
+                parser_result = resume_source.get("parser_result") or {}
+                resume_stage = str(resume_source.get("stage") or "coder")
+            if resume_stage in {"modifier", "diagnoser", "patch"}:
+                # 续跑从修复环节输入开始；随后第一次 Tester 应使用第 2 轮，
+                # 避免与 seed 的 tester_to_diagnoser_attempt1.json 重名。
                 tester_attempts = 1
             spec_ref = context.write_text_artifact("effective_spec.md", effective_spec)
-            plan_ref = context.write_json_artifact("plan.json", plan)
+            plan_ref = (
+                context.write_json_artifact("plan.json", plan) if plan is not None else None
+            )
             parser_result_ref = context.write_json_artifact(
                 "parser_result_resume.json", parser_result
             )
-            if resume_stage == "parser":
+            if evolution:
+                existing = resume_source.get("project_files") or {}
+                _copy_resume_files(context, existing)
+                context.options["evolution"] = {
+                    "source_run_id": resume_from,
+                    "source_project": resume_source.get("project_id"),
+                    "inventory": [
+                        {"path": path, "bytes": len(content.encode("utf-8"))}
+                        for path, content in existing.items()
+                    ],
+                    "old_plan": resume_source.get("plan"),
+                }
+                initial_handoff = context.write_handoff(
+                    "spec",
+                    "parser",
+                    {"task": project["id"], "artifacts": {"spec": context.write_text_artifact("spec.md", spec_base)}},
+                    label=f"Evolution {resume_from}: {resume_source.get('project_id')} → {project['id']}",
+                )
+                parser = ParserAgent(context)
+                parser_handoff = parser.run(initial_handoff)
+                planner = PlannerAgent(context)
+                planner_handoff = planner.run(parser_handoff)
+                coder = CoderAgent(context)
+                next_tester_input = coder.run(planner_handoff, existing_files=existing)
+            elif resume_stage == "parser":
                 initial_handoff = context.write_handoff(
                     "spec",
                     "parser",
@@ -397,20 +447,22 @@ def run_agent(
                     existing_files=resume_source.get("project_files") or {},
                     start_module=resume_source.get("module"),
                 )
-            elif resume_stage in {"tester", "modifier", "summary"}:
+            elif resume_stage in {"tester", "modifier", "diagnoser", "patch", "summary"}:
                 seeded = _seed_resume_project(
                     context, resume_source, spec_ref, plan_ref
                 )
-                if resume_stage == "modifier":
-                    modifier_input = _seed_modifier_input(
+                if resume_stage in {"modifier", "diagnoser", "patch"}:
+                    diagnoser_input = _seed_diagnoser_input(
                         context,
                         resume_source,
                         spec_ref,
                         plan_ref,
                         seeded["manifest"],
                     )
-                    modifier = ModifierAgent(context)
-                    next_tester_input = modifier.run(modifier_input, 1)
+                    diagnoser = DiagnoserAgent(context)
+                    diagnoser_handoff = diagnoser.run(diagnoser_input, 1)
+                    patch = PatchAgent(context)
+                    next_tester_input = patch.run(diagnoser_handoff, 1)
                 else:
                     # 已有完整 RTL 时直接从 Tester 继续。
                     next_tester_input = seeded["handler"]
@@ -437,7 +489,8 @@ def run_agent(
             next_tester_input = coder.run(planner_handoff)
 
         tester = TesterAgent(context)
-        modifier = ModifierAgent(context)
+        diagnoser = DiagnoserAgent(context)
+        patch = PatchAgent(context)
         while True:
             tester_attempts += 1
             tester_handoff = tester.run(next_tester_input, tester_attempts)
@@ -455,7 +508,8 @@ def run_agent(
             if tester_attempts >= int(max_tester_attempts):
                 break
             check_cancel()
-            next_tester_input = modifier.run(tester_handoff, tester_attempts)
+            diagnoser_handoff = diagnoser.run(tester_handoff, tester_attempts)
+            next_tester_input = patch.run(diagnoser_handoff, tester_attempts)
 
         if final_report is None:
             raise ValueError("Tester 没有产出验收报告")

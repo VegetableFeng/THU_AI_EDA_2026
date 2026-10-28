@@ -238,6 +238,7 @@
               <p id="agent-project-description" class="agent-project-description"></p>
             </div>
             <div class="agent-hero-actions">
+              <input id="agent-resume-from" class="agent-resume-input" type="text" placeholder="Resume from run ID (可选，跨等级进化填上一级 run ID)" spellcheck="false" autocomplete="off" />
               <button id="agent-resume-button" class="secondary-button hidden" type="button">↻ Resume last</button>
               <button id="agent-stop-button" class="stop-button hidden" type="button">■ Stop</button>
               <button id="agent-run-button" class="run-button" type="button"><span class="play-icon">▶</span> Run Agent <kbd>⌘↵</kbd></button>
@@ -396,16 +397,23 @@
         <label class="field-label inline">Max tokens <input id="agent-max-tokens" type="number" min="1" step="1" value="60000" /></label>
         <label class="field-label inline">Max calls <input id="agent-max-calls" type="number" min="1" max="1000" step="1" value="100" /></label>
         <label class="field-label inline">Max repairs <input id="agent-max-repair-attempts" type="number" min="1" max="10" step="1" value="8" /></label>
-        <p class="field-hint">Default: up to 8 Modifier repair rounds; Tester runs after each repair.</p>
+        <p class="field-hint">Default: up to 8 repair rounds (Diagnoser → Patch); Tester runs after each repair.</p>
         <label class="switch-label planner-skill-option" title="Available for the synchronous FIFO project only">
           <input id="agent-planner-skill" type="checkbox" />
           <span class="switch"></span>Planner Skill: FIFO Area/Power Pre-Evaluation
         </label>
         <p id="agent-planner-skill-hint" class="field-hint">Runs a Python estimator before planning and selects smaller-area FIFO architecture parameters.</p>
         <label class="field-label inline">Reasoning
-          <select id="agent-reasoning-effort"><option value="low" selected>low</option><option value="high">high</option><option value="max">max</option></select>
+          <select id="agent-reasoning-effort"><option value="low" selected>low</option><option value="high" >high</option><option value="max">max</option></select>
         </label>
-        <label class="switch-label"><input id="agent-thinking" type="checkbox" checked /><span class="switch"></span>Request model reasoning</label>
+        <div class="node-thinking-grid">
+          <span class="field-hint">Per-node reasoning (independent):</span>
+          <label class="switch-label"><input id="agent-thinking-parser" type="checkbox" checked /><span class="switch"></span>Parser</label>
+          <label class="switch-label"><input id="agent-thinking-planner" type="checkbox" checked /><span class="switch"></span>Planner</label>
+          <label class="switch-label"><input id="agent-thinking-coder" type="checkbox" /><span class="switch"></span>Coder</label>
+          <label class="switch-label"><input id="agent-thinking-diagnoser" type="checkbox" checked /><span class="switch"></span>Diagnoser</label>
+          <label class="switch-label"><input id="agent-thinking-patch" type="checkbox" /><span class="switch"></span>Patch</label>
+        </div>
         <div class="dialog-actions">
           <button type="button" id="agent-run-config-close" class="primary-button">Done</button>
         </div>

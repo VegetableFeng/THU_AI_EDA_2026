@@ -291,6 +291,8 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4p
 .run-status.running { color: var(--amber); }
 
 .switch-label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; cursor: pointer; }
+.node-thinking-grid { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 6px 0; }
+.node-thinking-grid .field-hint { flex-basis: 100%; margin: 0; }
 .switch-label input { display: none; }
 .switch { position: relative; display: inline-block; width: 29px; height: 16px; border-radius: 99px; background: #c6d1dd; transition: .18s; }
 .switch:after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgba(0, 0, 0, .18); transition: .18s; }
@@ -375,6 +377,12 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4p
 .agent-hero h1 { margin: 0; font-size: 26px; letter-spacing: -.035em; }
 .agent-hero p:not(.eyebrow) { max-width: 780px; margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
 .agent-hero-actions { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.agent-resume-input {
+  width: 300px; max-width: 36vw;
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; color: var(--text); background: var(--surface); font-size: 12px;
+}
+.agent-resume-input:focus { border-color: var(--accent); outline: 0; box-shadow: 0 0 0 3px rgba(15, 139, 109, .1); }
 
 .agent-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
 .agent-palette { min-height: 0; }

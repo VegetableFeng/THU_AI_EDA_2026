@@ -1,4 +1,4 @@
-"""Parser / Planner / Coder / Tester / Modifier 共用的协议与工具函数。"""
+"""Parser / Planner / Coder / Tester / Diagnoser / Patch 共用的协议与工具函数。"""
 
 from __future__ import annotations
 
@@ -83,34 +83,71 @@ RV32I_PIPELINE_CHECKLIST = """RV32I L1/L2 implementation hard checks:
 - Halt/reset: synchronous active-low reset, dmem_valid=0 during reset; halted/exit_code are registered and stable after ECALL commits.
 """
 
-MODIFIER_SYSTEM_PROMPT = """You are the RTL Modifier of a digital IC design agent.
-You work in a persistent multi-turn repair conversation. The first user message contains the frozen spec, project plan, current RTL files, and the first failure report; later user messages contain the next Tester failure and the current file snapshot.
-Your job is to diagnose the root cause and modify only the files that need changes.
+RV32I_TIMING_CONSTRAINTS = """1. 复位：同步低有效，只在 clk 上升沿生效；复位期间 dmem_valid=0；PC 更新优先级：复位 > 控制转移重定向 > ECALL 停机冻结 > load-use 暂停 > PC+4。
+2. 稳态性能：直线 ALU 程序稳态 CPI=1（每拍退休一条）；load-use 暂停恰好 1 拍（冻结 PC 与 IF/ID、清 ID/EX 的 valid，不冲刷更老指令）；Taken 控制转移最多 2 个 bubble；除 load-use 与重定向冲刷外不得停顿。
+3. 停机时序：ECALL 保持有效经 ID→EX→MEM→WB（停顿期间不得丢弃）；WB/提交沿产生一次 dbg_retire_valid 且该沿 halted/exit_code 仍为 0；下一时钟沿 halted=1 且 exit_code=x10；任何周期不得出现 halted=0 且 exit_code!=0；halted=1 后所有输出与架构状态保持稳定。
+4. 退休事件：每条真正提交的指令恰好产生一个单拍 dbg_retire_valid（含 load/store/branch/NOP/rd=x0/ECALL）；每拍至多退休一条；停顿不得重复计数，被冲刷或无效项不得产生事件。
+5. 前递：EX 级前递 EX/MEM 优先于 MEM/WB；load 结果只经 MEM/WB 前递（load-use 暂停保证）；store data 在 MEM 级前递；分支比较、JALR 的 rs1、store 地址均使用前递后的值；ID 读口与 WB 写口同址时必须读到正在写入的新值。
+6. 外部握手：同一接口至多一个在途请求；请求发出后 valid/addr 必须保持到 ready；TB 会插入确定性与变化的等待周期，不得假定 ready 常为 1；运行中每个周期 imem_addr[1:0]=00。"""
+
+RV32I_ADVANCED_TIMING = """7. 分支预测事件（L2/L3）：dbg_bp_resolve 对每条有效控制转移（条件分支/JAL/JALR）在实际解析沿恰好置 1 一个周期，每条至多一个事件；dbg_bp_mispredict 仅当预测下一 PC 与实际不同，与 resolve 同拍；停顿不得重复计数，复位/冲刷后的无效项不计。
+8. 乱序事件（L3）：dbg_ooo_issue 为发射队列中有效指令被功能单元真正接受的那拍；dbg_ooo_bypass 标记"存在更老未完成 load 时，更年轻的独立整数 ALU 指令仍被发射并完成"的事件；两者必须来自真实内部状态，禁止用计数器或 PC 模式伪造。
+9. Cache 时序（L1-L3）：cache 命中下稳态 CPI≈1；miss 周期不受零等待 L0 的"load-use 恰 1 拍"约束，但 refill 期间请求必须保持、不得 abort 在途事务；store 命中只合并 byte-enable 覆盖的字节，store miss 不得装配陈旧行。"""
+
+CODER_SELF_CHECK = """1. 只输出本模块；端口与计划 interfaces 逐字符一致（名称/方向/位宽）；所有输出端口都被驱动；无重复声明、无多驱动。
+2. 复位为同步低有效；本模块全部状态寄存器有确定复位值；复位期间外部接口信号满足 Spec 的初始状态。
+3. function 内无 return；无锁存器；无 typedef enum；无 class/interface/断言/动态数组。
+4. 跨模块信号名称与位宽和计划完全一致，与相邻模块对接处无歧义。"""
+
+CODER_SELF_CHECK_RV32I = """5. 停顿与冲刷：load-use 恰好暂停 1 拍且冻结取指；stall 期间各级 valid 保持；重定向只清 valid、不破坏正确在途指令；ECALL 在停顿期间不得被丢弃。
+6. 停机与退休：halted/exit_code 按沿更新，不存在 halted=0 且 exit_code!=0 的周期；每条提交指令恰好一个单拍 retire 脉冲，停顿不重复、冲刷不计数。
+7. 前递与冒险：EX/MEM 优先于 MEM/WB；load 结果只经 MEM/WB 前递；分支比较与 JALR 使用前递后的值。
+8. 若模块含 dbg_bp_resolve/dbg_bp_mispredict/dbg_ooo_issue/dbg_ooo_bypass：事件单拍、来自真实内部状态、停顿不重复、冲刷不计数、不可伪造。"""
+
+DIAGNOSER_SYSTEM_PROMPT = """You are the Diagnoser of a digital IC design agent.
+A teacher-testbench run failed. You receive a filtered failure brief and a file inventory (paths and sizes only, no code contents).
+Your job: identify the most likely root cause and select the few files that a Patch agent must inspect and modify.
 
 Rules:
+- Use only the evidence in the failure brief; never invent checks or errors that are not listed.
+- Map each failing check to the module most likely responsible, using the plan's module responsibilities.
+- Classify every failure as one of: functional (wrong data/control result), timing/protocol (reset, retire-pulse, halt-commit, stall/flush corner), or handshake (ready/valid misuse); the packet must state which and why in timing_notes.
+- involved_files must be a subset of the manifest paths, ordered by suspicion, at most 6 entries.
+- If the evidence cannot narrow the problem down, list every manifest path instead of guessing a single file.
+- repair_constraints must restate the binding freezes from the plan (never rename ports/modules/files) plus anything the patch must preserve.
+- Do not produce code. Return ONLY a JSON object:
+
+{"category": "compile|simulation|timeout|mixed", "root_cause": "one short paragraph", "failing_checks": ["..."], "involved_files": ["rtl/..."], "repair_constraints": ["..."], "evidence": "short quotes or line references from the brief", "timing_notes": "which timing corners (reset/retire/halt/stall/forwarding/handshake) are suspect and why"}
+
+The RV32I timing corners below are the reference knowledge base for classification:
+"""
+
+DIAGNOSER_SYSTEM_PROMPT += RV32I_TIMING_CONSTRAINTS + "\n" + RV32I_ADVANCED_TIMING
+
+PATCH_SYSTEM_PROMPT = """You are the Patch Agent of a digital IC design agent.
+A Diagnoser has compressed the latest teacher-TB failure into a failure packet. You receive that packet, the binding plan interfaces, and ONLY the current content of the involved files.
+Your job: apply a minimal, root-cause repair to the involved files.
+
+Rules:
+- Modify only the involved files provided in this message; never invent files that were not provided.
 - Match the Planner interfaces exactly. Never rename ports, modules, files, or parameters.
-- For compile failures, fix every error in stderr, including hierarchy/port/width errors.
-- For simulation failures, use the failing checks and trace to find the root cause; do not guess or weaken behavior.
+- For compile failures, fix every error in the packet's compiler output, including hierarchy/port/width errors.
+- For simulation failures, use the packet's failing checks and evidence to fix the root cause; do not guess or weaken behavior.
 - Preserve already-correct logic. A small targeted patch is better than rewriting the project.
 - Do not add external IPs, simulation-only constructs, or modify the teacher TB.
-- Keep diagnosis focused: identify the minimal root cause, avoid restating the spec or exploring unneeded alternatives.
-- Build a short failure matrix before editing: failing check -> expected/actual -> affected module(s). Cover every failed check category, not just the first one.
-- If the same check failed in the previous repair round, do not repeat the same patch. Re-read the failing trace and change the data path or state transition that produces the mismatch.
-- RV32I load/store failures: explicitly verify little-endian byte lanes, sign/zero extension, SB/SH byte enables and replicated wdata, cache refill merge, write-through ordering, and load-use forwarding.
-- RV32I reset/control failures: verify synchronous reset gating of dmem_valid, pipeline valid/flush, PC redirection, and halted/exit_code timing.
-- If many tests time out waiting for halted while imem_addr advances, prioritize the ECALL→halt path: ID decode, is_ecall propagation through EX/MEM/WB, WB halted/exit_code commit, IF freeze, and synchronous reset. Do not assume a cache or load/store bug from the timeout alone.
-- Before returning JSON, self-check each failed check from the latest report and state the repair in notes. Do not return files that only address a subset.
-- Compare every returned content with the current file snapshot. At least one returned file MUST differ from the snapshot; returning an unchanged file is an invalid no-op patch.
-- If a previous patch did not change behavior, do not repeat it; change the root-cause hypothesis and the implementation strategy.
+- If the packet lists previous hypotheses that did not fix the problem, do not repeat them; change the implementation strategy.
+- Before returning JSON, self-check each failing check from the packet AND the timing corners it implicates (reset values, retire-pulse uniqueness, halt/exit_code commit cycle, stall/flush valid handling, ready/valid stability); a patch that fixes the data path but breaks a timing corner is invalid.
+- State the repair and the timing corners you verified in notes.
+- At least one returned file MUST differ from the provided content; returning an unchanged file is an invalid no-op patch.
 - Return ONLY a JSON object; no Markdown fences, no prose outside JSON.
 
 Return schema:
-{"files": [{"path": "rtl/foo.sv", "content": "full SystemVerilog file content"}], "notes": "short diagnosis and repair summary"}
+{"files": [{"path": "rtl/foo.sv", "content": "full SystemVerilog file content"}], "notes": "short repair summary"}
 You may return only files that need changes, but each returned file must contain its complete content.
 
 """
 
-MODIFIER_SYSTEM_PROMPT += "\n\n" + RV32I_PIPELINE_CHECKLIST + "\n\n" + RV32I_L1_CODE_PATTERNS
+PATCH_SYSTEM_PROMPT += "\n\n" + RV32I_PIPELINE_CHECKLIST + "\n\n" + RV32I_L1_CODE_PATTERNS
 
 MAX_PARSER_ROUNDS = 3
 MAX_TEST_ATTEMPTS = 9
@@ -186,6 +223,7 @@ def validate_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "file": file,
                 "description": str(item.get("description") or "")[:500],
                 "interfaces": str(item.get("interfaces") or "")[:1000],
+                "reuse": bool(item.get("reuse")),
             }
         )
     top_module = payload.get("top_module") or clean_modules[0]["name"]
@@ -202,19 +240,19 @@ def validate_plan(payload: dict[str, Any]) -> dict[str, Any]:
 def validate_modifier_files(payload: dict[str, Any], plan: dict[str, Any]) -> dict[str, str]:
     files = payload.get("files")
     if not isinstance(files, list) or not files:
-        raise ValueError("Modifier 没有返回 files 列表")
+        raise ValueError("Patch 没有返回 files 列表")
     allowed = {module["file"] for module in plan["modules"]}
     clean: dict[str, str] = {}
     for item in files:
         if not isinstance(item, dict):
-            raise ValueError("Modifier 的 file 条目格式无效")
+            raise ValueError("Patch 的 file 条目格式无效")
         path = item.get("path")
         content = item.get("content")
         normalized = path.strip().replace("\\", "/") if isinstance(path, str) else ""
         if normalized not in allowed:
-            raise ValueError(f"Modifier 返回了计划之外的文件：{path}")
+            raise ValueError(f"Patch 返回了计划之外的文件：{path}")
         if not isinstance(content, str) or "module" not in content:
-            raise ValueError(f"Modifier 为 {path} 返回的内容不是 RTL")
+            raise ValueError(f"Patch 为 {path} 返回的内容不是 RTL")
         clean[normalized] = content
     return clean
 
@@ -290,6 +328,78 @@ def report_feedback(report: dict[str, Any] | None) -> str:
             lines.append("Compiler output (tail):")
             lines.append(detail[-3000:])
     return "\n".join(lines)
+
+
+def build_failure_brief(report: dict[str, Any] | None) -> dict[str, Any]:
+    """把教师 TB 报告压缩为 Diagnoser 可读的结构化失败简报。
+
+    上下文纪律：仿真类只保留失败检查、失败 suite 与前若干条 trace 失配；
+    编译类只保留编译器输出的最后一段；原始 stdout 与全量 trace 不进入简报。
+    """
+    if report is None:
+        return {
+            "stage": None,
+            "summary": "Verification has not run for the previous round.",
+            "failed_checks": [],
+            "total_failed_checks": 0,
+            "trace_mismatches": [],
+            "failing_suites": [],
+            "compile_error_tail": [],
+            "hints": [],
+            "return_code": None,
+        }
+    checks = report.get("checks") or []
+    failed_checks = [
+        {"name": str(item.get("name") or ""), "detail": str(item.get("detail") or "")[:300]}
+        for item in checks[:12]
+    ]
+    lines = [report_summary(report)]
+    hints: list[str] = []
+    joined = "\n".join(str(item.get("detail") or "") for item in checks)
+    timeout_count = sum("等待 halted 超时" in text for text in (str(item.get("detail") or "") for item in checks))
+    if timeout_count >= 2:
+        hints.append(
+            "HALT-TIMEOUT: 多个测试等到 halted 超时且 imem_addr 仍在变化；"
+            "优先检查 ECALL 在 ID 级的识别、is_ecall 经 ID→EX→MEM→WB 的传递、"
+            "WB 的 halted/exit_code 提交、IF/流水线 halt 冻结与同步复位。"
+        )
+    if "cache_instruction_reuse" in joined or "imem 请求" in joined or "I-memory request changed" in joined:
+        hints.append(
+            "ICACHE/REFILL: refill 期间 imem_valid/addr 必须保持到 imem_ready；"
+            "不要 abort 在途 refill；完成后安装 line，仅用 epoch 抑制过期 response。"
+        )
+    compile_tail: list[str] = []
+    if report.get("stage") == "compile":
+        detail = (report.get("stderr") or report.get("stdout") or "").strip()
+        # iverilog 的 "sorry:" 是非致命警告（有等价回退），真正的失败原因在其余行。
+        real_lines = [line for line in detail.splitlines() if "sorry:" not in line]
+        compile_tail = real_lines[-40:]
+        joined_real = "\n".join(real_lines)
+        if "Unknown module type" in joined_real or "modules were missing" in joined_real:
+            hints.append(
+                "MODULE-MISSING: 有被例化的模块未定义。检查 plan.modules 是否遗漏了实现所必需的"
+                "模块（如 ALU、乘法器等子模块）；若使用参考实现，确认其全部文件都已写入工程。"
+            )
+        if "is not a port of" in joined_real:
+            hints.append(
+                "PORT-MISMATCH: 例化端口与模块声明不一致——常见于复用模块与参考实现/新生成模块"
+                "混用导致接口约定不同。以计划 interfaces 为准统一端口，或改用同一来源的实现。"
+            )
+    return {
+        "stage": report.get("stage"),
+        "summary": report_summary(report),
+        "failed_checks": failed_checks,
+        "total_failed_checks": len(checks),
+        "trace_mismatches": trace_mismatches(report)[:8],
+        "failing_suites": [
+            item.get("name")
+            for item in (report.get("test_suites") or [])
+            if isinstance(item, dict) and item.get("name") and not item.get("passed") and not item.get("skipped")
+        ],
+        "compile_error_tail": compile_tail,
+        "hints": hints,
+        "return_code": report.get("return_code"),
+    }
 
 
 def project_feedback(files: dict[str, str], plan: dict[str, Any], report: dict[str, Any]) -> str:

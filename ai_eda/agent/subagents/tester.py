@@ -78,8 +78,12 @@ class TesterAgent(SubAgent):
             report=report,
             feedback=report_feedback(report),
         )
-        target = "summary" if report.get("passed") else "modifier"
-        label = "Tester → Summary: final report artifact" if report.get("passed") else "Tester → Modifier: failure report artifact"
+        target = "summary" if report.get("passed") else "diagnoser"
+        label = (
+            "Tester → Summary: final report artifact"
+            if report.get("passed")
+            else "Tester → Diagnoser: failure report artifact"
+        )
         return self.runtime.write_handoff(
             "tester",
             target,
