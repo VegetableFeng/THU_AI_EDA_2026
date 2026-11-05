@@ -40,11 +40,20 @@ class PlannerAgent(SubAgent):
         if isinstance(evolution, dict) and evolution.get("inventory"):
             old_plan = evolution.get("old_plan")
             evolution_prompt = (
-                "\n\n本次运行为跨等级进化：项目已包含上一等级通过教师 TB 验收的实现文件，清单如下：\n"
+                "\n\n本次运行为跨等级进化：项目已包含上一等级通过教师 TB 验证的实现文件，清单如下：\n"
                 + json.dumps(evolution.get("inventory"), ensure_ascii=False, indent=2)
-                + "\n请尽量复用已满足新 Spec 的模块：对应 module 置 \"reuse\": true 并保持 file 与接口不变；"
-                "只为新增能力或必须重写的模块规划新文件（reuse 置 false 或缺省）。"
-                "最终计划必须包含整个项目的全部模块（复用 + 新增），新模块与复用模块的接口必须一致。\n"
+                + "\n模块分档规则（必须遵守）：\n"
+                "1. 无需改动的既有模块：置 \"reuse\": true，file 与 interfaces 保持与上一等级完全一致；\n"
+                "2. 需要接入新能力的既有模块（如顶层、取指级）：置 \"reuse\": false，"
+                "并在 description 开头写明【EXTEND】与具体增量要求——Coder 会拿到该模块的已验证实现做最小扩展，"
+                "既有端口的名称/位宽必须保持，只允许按计划新增端口；\n"
+                "3. 全新能力的模块（如预测器）：正常规划新文件。\n"
+                "4. 严禁把既有模块规划为从零重写：每个已在清单中的文件都必须落在 1 或 2 档。\n"
+                "5. extend 档模块的 interfaces 必须兼容其已验证实现的既有端口——"
+                "只允许追加新端口，不得删除/改名/改方向既有端口（否则顶层漏接会产生 X）。\n"
+                "6. reuse 与 extend 档模块的 interfaces 字段必须逐字继承上一等级计划中同名模块的 "
+                "interfaces（旧计划见下），只允许在末尾追加新端口条目——不要凭记忆重新编写端口列表。\n"
+                "最终计划必须包含整个项目的全部模块（复用 + 扩展 + 新增），新模块与既有模块的接口必须一致。\n"
                 + (
                     "上一等级的计划（可继承接口定义）：\n"
                     + json.dumps(old_plan, ensure_ascii=False, indent=2)

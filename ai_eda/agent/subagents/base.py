@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ai_eda.agent.exceptions import AgentCancelled
 from ai_eda.model.client import RTL_SYSTEM_PROMPT, ModelClient
 from ai_eda.token_metrics import estimate_output_tokens, output_tokens as reported_output_tokens
 
@@ -92,7 +93,6 @@ class RunContext:
         node_id = event.get("node_id")
         if isinstance(node_thinking, dict) and isinstance(node_thinking.get(node_id), bool):
             merged_options["thinking"] = node_thinking[node_id]
-        client = self.make_client(merged_options)
         answer_parts: list[str] = []
         reasoning_parts: list[str] = []
         usage: dict[str, Any] | None = None
@@ -103,33 +103,101 @@ class RunContext:
         event["reasoning"] = ""
         event["response"] = ""
         event["output_tokens"] = 0
-        for chunk in client.stream_chat_detail(messages):
-            self.check_cancel()
-            kind = chunk.get("type")
-            if kind == "reasoning":
-                reasoning_parts.append(str(chunk.get("text") or ""))
-            elif kind == "answer":
-                answer_parts.append(str(chunk.get("text") or ""))
-            elif kind == "done":
-                answer_parts = [str(chunk.get("answer") or "")]
-                reasoning_parts = [str(chunk.get("reasoning") or "")]
-                usage = chunk.get("usage")
-                finish_reason = chunk.get("finish_reason")
-            event["reasoning"] = "".join(reasoning_parts)
-            event["response"] = "".join(answer_parts)
-            event["output_tokens"] = estimate_output_tokens(
-                event["response"] + (event["reasoning"] or "")
-            )
-            now = time.monotonic()
-            if now - last_emit >= 0.12:
-                self.emit(json.loads(json.dumps(event, ensure_ascii=False)))
-                last_emit = now
-            if now - last_persist >= 1.0:
-                self.persist()
-                last_persist = now
+        # 预算升档环（每节点最多 3 档）：finish_reason=length → 输出预算翻倍
+        # 重试（上限为服务端硬限 393216）；stop 但正文为空且思维链很长 →
+        # 关闭思维链重试，把全部预算留给正文。任何一档成功即跳出。
+        from ai_eda.model.client import ModelClient as _MC
+
+        budget = int(
+            merged_options.get("max_tokens") or self.options.get("max_tokens") or 60000
+        )
+        answer = ""
+        reasoning_text = ""
+        retry_escalation = False
+        for escalation in range(3):
+            if escalation > 0:
+                merged_options["max_tokens"] = budget
+            client = self.make_client(merged_options)
+            # 瞬态网络错误（超时/连接中断）不应当杀死整个运行：整个流式调用
+            # 最多重试 2 次，每次重新发起请求并丢弃已收到的半截内容。
+            for stream_attempt in range(3):
+                answer_parts = []
+                reasoning_parts = []
+                usage = None
+                finish_reason = None
+                try:
+                    for chunk in client.stream_chat_detail(messages):
+                        self.check_cancel()
+                        kind = chunk.get("type")
+                        if kind == "reasoning":
+                            reasoning_parts.append(str(chunk.get("text") or ""))
+                        elif kind == "answer":
+                            answer_parts.append(str(chunk.get("text") or ""))
+                        elif kind == "done":
+                            answer_parts = [str(chunk.get("answer") or "")]
+                            reasoning_parts = [str(chunk.get("reasoning") or "")]
+                            usage = chunk.get("usage")
+                            finish_reason = chunk.get("finish_reason")
+                        event["reasoning"] = "".join(reasoning_parts)
+                        event["response"] = "".join(answer_parts)
+                        event["output_tokens"] = estimate_output_tokens(
+                            event["response"] + (event["reasoning"] or "")
+                        )
+                        now = time.monotonic()
+                        if now - last_emit >= 0.12:
+                            self.emit(json.loads(json.dumps(event, ensure_ascii=False)))
+                            last_emit = now
+                        if now - last_persist >= 1.0:
+                            self.persist()
+                            last_persist = now
+                    break
+                except AgentCancelled:
+                    raise
+                except Exception as error:
+                    message = str(error)
+                    # 空正文/截断以异常形式从 ModelClient 抛出：在这里升档重试，
+                    # 而不是让一次可自愈的输出问题杀死整个运行。
+                    if "模型没有返回最终文本内容" in message and escalation < 2:
+                        if "finish_reason=length" in message and budget < _MC.MAX_TOKENS_LIMIT:
+                            budget = min(budget * 2, _MC.MAX_TOKENS_LIMIT)
+                            merged_options["max_tokens"] = budget
+                            event["budget_escalated_to"] = budget
+                        elif merged_options.get("thinking", True):
+                            merged_options["thinking"] = False
+                            merged_options["max_tokens"] = budget
+                            event["retry_without_thinking"] = escalation + 1
+                        else:
+                            raise
+                        retry_escalation = True
+                        break
+                    transient = any(
+                        token in message.lower()
+                        for token in ("timed out", "timeout", "connection", "temporarily unavailable")
+                    )
+                    if not transient or stream_attempt == 2:
+                        raise
+                    event["transient_retry"] = stream_attempt + 1
+                    time.sleep(2.0 * (stream_attempt + 1))
+            if retry_escalation:
+                retry_escalation = False
+                continue
+            answer = "".join(answer_parts)
+            reasoning_text = "".join(reasoning_parts) or ""
+            if escalation >= 2:
+                break
+            if finish_reason == "length" and budget < _MC.MAX_TOKENS_LIMIT:
+                budget = min(budget * 2, _MC.MAX_TOKENS_LIMIT)
+                event["budget_escalated_to"] = budget
+                continue
+            if not answer.strip() and reasoning_text and merged_options.get("thinking", True):
+                # 思维链耗尽输出预算、正文为空：关闭思维链重试一档。
+                merged_options["thinking"] = False
+                merged_options["max_tokens"] = budget
+                event["retry_without_thinking"] = True
+                continue
+            break
         self.check_cancel()
-        answer = "".join(answer_parts)
-        reasoning = "".join(reasoning_parts) or None
+        reasoning = reasoning_text or None
         result = {
             "answer": answer,
             "reasoning": reasoning,

@@ -31,12 +31,57 @@ def _effective_changes(
     return result
 
 
+def _quick_compile_check(files: dict[str, str]) -> str | None:
+    """把工程文件交给 iverilog 快速编译；返回确定性错误文本或 None。
+
+    只编译工程本身（不含教师 TB），足以捕获语法、端口与层次错误——
+    这类错误交给完整教师 TB 验收只会浪费一整轮预算。
+    """
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="ai_eda_patch_gate_") as temp_dir:
+        paths: list[str] = []
+        for relative, content in sorted(files.items()):
+            target = Path(temp_dir) / relative.replace("/", "_")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            paths.append(str(target))
+        output_path = Path(temp_dir) / "gate.out"
+        try:
+            result = subprocess.run(
+                ["iverilog", "-g2012", "-o", str(output_path), *paths],
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as error:
+            return f"编译器无法执行：{error}"
+        if result.returncode == 0:
+            return None
+        lines = [
+            line
+            for line in (result.stderr + result.stdout).splitlines()
+            if "sorry:" not in line
+        ]
+        return "\n".join(lines[-40:]) or f"iverilog 退出码 {result.returncode}"
+
+
 class PatchAgent(SubAgent):
     name = "patch"
     title = "06 · Patch"
     node_type = "model"
-    # 打补丁是工具型输出（完整文件内容）：关闭思维链，把输出预算留给代码。
+    # 打补丁是工具型输出（完整文件内容）：默认关闭思维链，把输出预算留给代码。
+    # L3 架构级修复（乱序发射/重命名/ROB）需要真正的推理，由 _model_options_for
+    # 按项目等级动态升级。
     MODEL_OPTIONS = {"thinking": False}
+
+    def _model_options_for(self) -> dict[str, Any]:
+        project_id = str((self.runtime.options.get("project") or {}).get("id") or "")
+        if project_id == "rv32i5_l3_ooo":
+            return {"thinking": True}
+        return dict(self.MODEL_OPTIONS)
 
     def run(self, diagnoser_handoff: Path, attempt: int) -> Path:
         incoming = self.runtime.read_handoff(diagnoser_handoff)["payload"]
@@ -94,7 +139,10 @@ class PatchAgent(SubAgent):
             "4. 对照 packet 的 failing_checks 逐项覆盖；不要为了通过而删除检查或伪造行为。\n"
             "5. 至少一个文件必须与当前内容不同（禁止空补丁）。\n"
             "6. 返回前按时序角自查：复位值、retire/停机提交的拍数、停顿与冲刷的 valid 处理、"
-            "ready/valid 稳定性——修好数据通路但破坏时序角的补丁同样无效。\n\n"
+            "ready/valid 稳定性——修好数据通路但破坏时序角的补丁同样无效。\n"
+            "7. 若修改涉及顶层的模块例化，逐一对齐模块声明的全部端口（尤其 halted/flush/"
+            "flush_epoch 等控制输入）——iverilog 对漏接端口静默产出 X，是 freeze/timeout 类"
+            "失败的常见根因。\n\n"
             "Failure packet：\n"
             + json.dumps(packet, ensure_ascii=False, indent=2)
             + "\n\n计划接口契约：\n"
@@ -134,7 +182,7 @@ class PatchAgent(SubAgent):
                     ]
                 )
             result = self.runtime.call_model_messages(
-                event, messages, model_options=self.MODEL_OPTIONS
+                event, messages, model_options=self._model_options_for()
             )
             answer = result.get("answer") or ""
             last_answer = answer
@@ -161,15 +209,66 @@ class PatchAgent(SubAgent):
             raise ValueError(f"Patch 修复无效（连续 2 次未返回合法修改）：{last_error}") from last_error
 
         notes = str(payload.get("notes") or "")
+        original_snapshot = dict(current)
         for relative, content in changed.items():
             target = safe_project_path(self.runtime.run_dir, relative)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
+            current[relative] = content
+
+        # 快速编译门：语法/端口/层次错误在这里就地重试，不浪费一次完整教师 TB。
+        compile_error = _quick_compile_check(current)
+        for compile_retry in range(2):
+            if compile_error is None:
+                break
+            messages.append({"role": "assistant", "content": last_answer})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "补丁编译失败（iverilog，确定性错误）：\n"
+                        + compile_error[-1500:]
+                        + "\n请基于同一上下文修复这些错误并重新输出 JSON 对象"
+                        "（files 数组 + notes，只允许修改涉及文件）。"
+                    ),
+                }
+            )
+            result = self.runtime.call_model_messages(
+                event, messages, model_options=self._model_options_for()
+            )
+            answer = result.get("answer") or ""
+            last_answer = answer
+            messages.append({"role": "assistant", "content": answer})
+            try:
+                retry_payload = extract_json_payload(answer)
+                retry_changed = _effective_changes(
+                    validate_modifier_files(retry_payload, plan), current
+                )
+                if not retry_changed:
+                    raise ValueError("重试补丁没有产生任何修改")
+                outside = [pth for pth in retry_changed if pth not in files]
+                if outside:
+                    raise ValueError("重试补丁返回了涉及文件之外的文件：" + "、".join(outside))
+                for relative, content in retry_changed.items():
+                    target = safe_project_path(self.runtime.run_dir, relative)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
+                    current[relative] = content
+                compile_error = _quick_compile_check(current)
+            except ValueError as error:
+                event["patch_validation_error"] = str(error)
+        if compile_error is not None:
+            raise ValueError(f"Patch 补丁无法通过编译门：{compile_error[-800:]}")
+        changed = {
+            path: content
+            for path, content in current.items()
+            if original_snapshot.get(path) != content
+        }
+
         artifact_dir = self.runtime.run_dir / f"step-{event['step']:02d}-{event['node_id']}"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         for relative, content in changed.items():
             (artifact_dir / relative.replace("/", "_")).write_text(content, encoding="utf-8")
-            current[relative] = content
 
         next_manifest_ref = self.runtime.write_json_artifact(
             f"rtl_manifest_attempt{attempt}.json",

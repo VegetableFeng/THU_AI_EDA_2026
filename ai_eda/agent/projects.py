@@ -26,6 +26,7 @@ _PROJECTS: dict[str, dict[str, Any]] = {
         "title": "RV32I · L0 Five-Stage Pipeline",
         "description": "Baseline RV32I five-stage pipeline: forwarding, load-use stalls, and branch flush; shares the teacher TB and performance benchmarks with the advanced tiers.",
         "spec_path": TASKS_ROOT / "homework_rv32i5" / "specs" / "spec.md",
+        "timeout_seconds": 60,
         "testbench_path": TASKS_ROOT / "homework_rv32i5" / "tb.sv",
         "testbench_top": "tb_agent_rv32i5",
         "power_testbench_path": TASKS_ROOT / "homework_rv32i5" / "power_tb.sv",
@@ -58,6 +59,14 @@ for _project_id, _level, _title, _description, _spec_file in (
         "spec_path": TASKS_ROOT / "homework_rv32i5" / "specs" / _spec_file,
         "expected_cpu_level": _level,
     }
+# L3 乱序核仿真更慢（离线实测全量 TB ~250s+），60s 模板超时会把健康设计
+# 误杀为 simulation_timeout；按层级放宽。
+_PROJECTS[_project_id]["timeout_seconds"] = 60 + 80 * _level
+# PPA 预算（仅在 metrics 可用时检查）：L3 基线 350.9k µm² / 76.3 mW，
+# 预算迫使 agent 做等价重构优化（ckpt 减半、cache 行数、写使能门控）。
+if _level == 3:
+    _PROJECTS[_project_id]["area_budget_um2"] = 300000
+    _PROJECTS[_project_id]["power_budget_w"] = 0.060
 
 
 def get_project(project_id: str | None = None) -> dict[str, Any]:

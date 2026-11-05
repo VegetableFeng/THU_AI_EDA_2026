@@ -394,17 +394,17 @@
         <h2>Run configuration</h2>
         <p class="field-hint">Applies to the next Run Agent.</p>
         <label class="field-label inline">Temperature <input id="agent-temperature" type="number" min="0" max="2" step="0.1" value="0.2" /></label>
-        <label class="field-label inline">Max tokens <input id="agent-max-tokens" type="number" min="1" step="1" value="60000" /></label>
+        <label class="field-label inline">Max tokens <input id="agent-max-tokens" type="number" min="1" max="393216" step="1" value="200000" /></label>
         <label class="field-label inline">Max calls <input id="agent-max-calls" type="number" min="1" max="1000" step="1" value="100" /></label>
-        <label class="field-label inline">Max repairs <input id="agent-max-repair-attempts" type="number" min="1" max="10" step="1" value="8" /></label>
-        <p class="field-hint">Default: up to 8 repair rounds (Diagnoser → Patch); Tester runs after each repair.</p>
+        <label class="field-label inline">Max repairs <input id="agent-max-repair-attempts" type="number" min="1" max="10" step="1" value="4" /></label>
+        <p class="field-hint">Default: up to 4 repair rounds (Diagnoser → Patch); Tester runs after each repair.</p>
         <label class="switch-label planner-skill-option" title="Available for the synchronous FIFO project only">
           <input id="agent-planner-skill" type="checkbox" />
           <span class="switch"></span>Planner Skill: FIFO Area/Power Pre-Evaluation
         </label>
         <p id="agent-planner-skill-hint" class="field-hint">Runs a Python estimator before planning and selects smaller-area FIFO architecture parameters.</p>
         <label class="field-label inline">Reasoning
-          <select id="agent-reasoning-effort"><option value="low" selected>low</option><option value="high" >high</option><option value="max">max</option></select>
+          <select id="agent-reasoning-effort"><option value="low">low</option><option value="high">high</option><option value="max" selected>max</option></select>
         </label>
         <div class="node-thinking-grid">
           <span class="field-hint">Per-node reasoning (independent):</span>

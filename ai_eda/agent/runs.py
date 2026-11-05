@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,8 +40,7 @@ HANDOFF_ARTIFACT_TITLES = {
     "combined_rtl": "组合 RTL",
 }
 
-class AgentCancelled(RuntimeError):
-    """用户主动停止 Agent 运行时抛出。"""
+from ai_eda.agent.exceptions import AgentCancelled  # noqa: E402,F401  向后兼容再导出
 
 
 
@@ -54,7 +54,17 @@ def _write_json(path: Path, payload: Any) -> None:
     temporary_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    temporary_path.replace(path)
+    # /mnt/f 上的原子重命名会被 Windows 侧的读句柄（杀毒/监控/编辑器）瞬时锁住；
+    # 带退避重试，避免一次瞬时 PermissionError 杀死整个 Agent 运行。
+    last_error: OSError | None = None
+    for attempt in range(5):
+        try:
+            temporary_path.replace(path)
+            return
+        except PermissionError as error:
+            last_error = error
+            time.sleep(0.2 * (attempt + 1))
+    raise last_error
 
 
 

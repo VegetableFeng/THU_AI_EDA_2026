@@ -30,19 +30,28 @@ class DiagnoserAgent(SubAgent):
     MAX_INVOLVED_FILES = 6
 
     def _previous_hypotheses(self, attempt: int) -> list[dict[str, Any]]:
-        """收集此前各轮 packet 的根因，供本轮排除已被证伪的假设。"""
+        """收集此前各轮 packet 的根因与 Patch 实际改动，供本轮排除已证伪方向。"""
         hypotheses: list[dict[str, Any]] = []
         for earlier in range(1, attempt):
+            entry: dict[str, Any] = {"attempt": earlier}
             path = self.runtime.artifacts_dir / f"failure_packet_attempt{earlier}.json"
-            if not path.is_file():
-                continue
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            cause = str((payload or {}).get("root_cause") or "").strip()
-            if cause:
-                hypotheses.append({"attempt": earlier, "root_cause": cause[:400]})
+            if path.is_file():
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    entry["root_cause"] = str((payload or {}).get("root_cause") or "")[:400]
+                except (OSError, json.JSONDecodeError):
+                    pass
+            handoff_path = self.runtime.handoffs_dir / f"patch_to_tester_attempt{earlier}.json"
+            if handoff_path.is_file():
+                try:
+                    record = json.loads(handoff_path.read_text(encoding="utf-8"))
+                    changed = (record.get("payload") or {}).get("changed_paths")
+                    if isinstance(changed, list) and changed:
+                        entry["patched_files"] = changed
+                except (OSError, json.JSONDecodeError):
+                    pass
+            if entry.get("root_cause") or entry.get("patched_files"):
+                hypotheses.append(entry)
         return hypotheses
 
     def run(self, tester_handoff: Path, attempt: int) -> Path:
@@ -83,7 +92,8 @@ class DiagnoserAgent(SubAgent):
             )
 
         brief = build_failure_brief(report)
-        previous = self._previous_hypotheses(attempt)
+        # 只保留最近 3 轮：更早的假设已由修复轮次隐式证伪，全量注入会撑爆上下文。
+        previous = self._previous_hypotheses(attempt)[-3:]
         interfaces = "\n".join(
             f"- {item['name']} ({item['file']}): {item.get('interfaces', '')}"
             for item in plan.get("modules", [])
@@ -103,13 +113,26 @@ class DiagnoserAgent(SubAgent):
             + "\n\n计划接口契约（修复约束：不得改名端口/模块/文件）：\n"
             + interfaces
             + (
-                "\n\n此前已被证伪的根因假设（不得重复）：\n"
+                "\n\n此前各轮的根因假设与 Patch 实际修改过的文件（已被证伪，不得重复）：\n"
                 + json.dumps(previous, ensure_ascii=False, indent=2)
+                + "\n注意：若多轮已修改过同一批文件而失败模式不变，根因大概率在这些文件之外"
+                "（如模块间协议不匹配、响应被丢弃），或在于该批文件需要回退到已验证基线重新评估。\n"
                 if previous
                 else ""
             )
             + "\n\n请只返回约定的 JSON 对象。"
         )
+        # 运行时注入活性缺陷诊断：内容存于 reference 目录的 ACTIVE_DEFECTS.md，
+        # 更新无需重启服务（区别于 import 期固化的系统提示词）。
+        defects_path = (
+            Path(__file__).resolve().parents[2]
+            / "content" / "agent" / "skills" / "rv32i5_l3_reference" / "ACTIVE_DEFECTS.md"
+        )
+        if defects_path.is_file():
+            prompt += (
+                "\n\n【当前已定位的活性缺陷（探针级证据，优先处理）】\n"
+                + defects_path.read_text(encoding="utf-8")
+            )
         event = self.runtime.begin_event(
             "diagnoser", self.node_type, f"{self.title} · Round {attempt}", prompt, attempt
         )
@@ -132,6 +155,11 @@ class DiagnoserAgent(SubAgent):
             if path in manifest_set and path not in seen:
                 seen.add(path)
                 involved.append(path)
+        # X 传播/漏接端口类失败必看顶层：把顶层文件提到 involved 首位。
+        top_candidates = [p for p in manifest_paths if p.endswith(("rv32i5.sv", "top.sv"))]
+        for top_path in top_candidates:
+            if top_path not in involved:
+                involved.append(top_path)
         fallback = not involved
         if fallback:
             involved = list(manifest_paths)

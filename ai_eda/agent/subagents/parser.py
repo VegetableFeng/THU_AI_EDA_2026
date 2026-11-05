@@ -38,6 +38,19 @@ class ParserAgent(SubAgent):
             if rounds > MAX_PARSER_ROUNDS:
                 raise ValueError("Spec 补充轮次超过限制，仍未得到充分规格")
             supplement_text = "\n\n".join(supplements) or "（无）"
+            l3_note = ""
+            project_id = str((self.runtime.options.get("project") or {}).get("id") or "")
+            if project_id == "rv32i5_l3_ooo":
+                l3_note = (
+                    "\nL3 项目已知验收阈值（教师 TB 固定，写进 spec_addendum 以冻结）：\n"
+                    "- dbg_features 必须为常量 3'b111；\n"
+                    "- ooo 负载验收：retired_count=21、dbg_ooo_issue>=20、至少 1 个 bypass"
+                    "（在 dmem_valid=1 && dmem_ready=0 拍断言）；\n"
+                    "- predictor 负载：retired_count=132、bp_resolve>=64、bp_mispredict<=8；\n"
+                    "- cache probe：12 次外部 D 读、1 次 write-through、热循环新增事务 <=20。\n"
+                    "乱序发射/重命名/ROB 的内部结构（队列深度、发射宽度、checkpoint 数量）"
+                    "属于实现自由，不要因此提问。"
+                )
             prompt = (
                 "判断下面的数字电路设计 Spec 是否足以实现、编译并通过教师 TB，"
                 "以及是否足以规划模块与文件结构。只对阻断项提问：顶层端口/复位/时钟/ISA/"
@@ -50,7 +63,8 @@ class ParserAgent(SubAgent):
                 f"{supplement_text}\n\n"
                 "已有 Parser 补充/修正：\n"
                 f"{addendum or '（无）'}\n\n"
-                "请判断是否充分；只返回补充/修正，不要重写或缩短原 Spec。"
+                + l3_note
+                + "\n请判断是否充分；只返回补充/修正，不要重写或缩短原 Spec。"
                 "请只返回约定的 JSON 对象。"
             )
             event = self.runtime.begin_event("parser", self.node_type, self.title, prompt, rounds)

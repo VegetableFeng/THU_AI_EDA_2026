@@ -223,7 +223,7 @@ def _homework_options(request: dict[str, Any]) -> dict[str, Any]:
 
 def _agent_options(request: dict[str, Any]) -> dict[str, Any]:
     thinking = bool(request.get("thinking", True))
-    reasoning_effort = str(request.get("reasoning_effort", "low"))
+    reasoning_effort = str(request.get("reasoning_effort", "max"))
     if reasoning_effort not in {"low", "high", "max"}:
         raise ValueError("reasoning_effort 无效")
     allowed_nodes = {"parser", "planner", "coder", "diagnoser", "patch"}
@@ -236,13 +236,13 @@ def _agent_options(request: dict[str, Any]) -> dict[str, Any]:
     temperature = float(request.get("temperature", 0.2))
     if not 0 <= temperature <= 2:
         raise ValueError("temperature 必须在 0 到 2 之间")
-    max_tokens = int(request.get("max_tokens", 60000))
+    max_tokens = int(request.get("max_tokens", 200000))
     if max_tokens < 1:
         raise ValueError("max_tokens 必须为正整数")
     max_calls = int(request.get("max_calls", 100))
     if not 1 <= max_calls <= 1000:
         raise ValueError("max_calls 必须在 1 到 1000 之间")
-    max_repair_attempts = int(request.get("max_repair_attempts", 8))
+    max_repair_attempts = int(request.get("max_repair_attempts", 4))
     if not 1 <= max_repair_attempts <= 10:
         raise ValueError("max_repair_attempts 必须在 1 到 10 之间")
     planner_skill = bool(request.get("planner_skill", False))
@@ -279,6 +279,8 @@ def _agent_options(request: dict[str, Any]) -> dict[str, Any]:
         "design_id": design_id,
         "design_name": design_name,
         "project_id": project_id,
+        "area_budget_um2": (float(request["area_budget_um2"]) if request.get("area_budget_um2") is not None else None),
+        "power_budget_w": (float(request["power_budget_w"]) if request.get("power_budget_w") is not None else None),
     }
 
 

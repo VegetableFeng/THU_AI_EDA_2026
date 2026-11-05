@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import time
+
+import httpx
 from collections.abc import Iterator
 from typing import Any, Literal
 
@@ -52,7 +54,15 @@ class ModelClient:
         self.max_tokens = min(max_tokens, self.MAX_TOKENS_LIMIT)
         self.thinking = thinking
         self.reasoning_effort = reasoning_effort
-        self.client = OpenAI(api_key=api_key, base_url=self.BASE_URL)
+        # 显式超时：长生成中途的服务端静默断流（无 FIN/RST 的连接死亡）会让
+        # 无超时的 HTTP 读无限阻塞，整个 Agent 线程挂死。read=300s 保证挂起
+        # 的调用最迟 5 分钟变成 APITimeoutError，由上层的瞬态重试/预算升档接住。
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=self.BASE_URL,
+            timeout=httpx.Timeout(connect=15.0, read=300.0, write=60.0, pool=15.0),
+            max_retries=0,
+        )
 
     def _complete(self, messages: list[dict[str, str]]) -> str:
         """向 DeepSeek 发送完整消息历史并取回最终文本。"""

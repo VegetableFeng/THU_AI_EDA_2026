@@ -36,6 +36,18 @@ Return ONLY a JSON object:
 Use only relative paths ending in .sv. Every module must be implementable in one file. The interfaces field is the interface contract: list every port name, direction and width, and use identical names/widths for a signal in every module. Do not return Markdown fences or extra text."""
 
 RV32I_L1_CODE_PATTERNS = """RV32I L1 tactical patterns (use these structures; keep interfaces from the plan):
+0) IF in-flight epoch guard (L2/L3 MUST implement; verified root cause of retire-PC mismatches):
+  // latch at the cycle the request is ACCEPTED by the I-Cache (same cycle you latch req_pc/pred):
+  always_ff @(posedge clk) begin ... issue branch: inflight_epoch <= flush_epoch; ...
+  // on response arrival, DISCARD stale responses (the I-Cache does NOT suppress
+  // HIT responses of flushed requests — only refill responses are epoch-gated):
+  if (cpu_resp_valid) begin
+    if (inflight_epoch != flush_epoch) begin
+      if2id_valid <= 1'b0; req_pending <= 1'b1; // drop wrong-path hit response, refetch
+    end else begin ... normal capture ... end
+  end
+  Without this guard, a hit request accepted on the redirect cycle leaks its response
+  one cycle later and gets tagged with a stale PC → retire PC/instruction mismatches.
 1) IF response / stall:
   always_ff @(posedge clk) begin
     if (!rst_n) ...
@@ -83,6 +95,63 @@ RV32I_PIPELINE_CHECKLIST = """RV32I L1/L2 implementation hard checks:
 - Halt/reset: synchronous active-low reset, dmem_valid=0 during reset; halted/exit_code are registered and stable after ECALL commits.
 """
 
+RV32I_OOO_PATTERNS = """RV32I L3 out-of-order architecture patterns (spec section D; use these structures):
+1) Minimal correct OoO core (spec D.1): 8-entry ROB, 8-entry integer issue queue, 40 physical
+   registers (PR0=x0 always ready/0; PR1..31 initial map; free list PR32..39), 2-entry load/store
+   queue. Single issue + single retire are enough — what matters is REAL out-of-order ISSUE:
+   an independent younger ALU instruction must issue while an older load waits for external memory.
+2) Issue queue dispatch/issue split (the #1 failure mode is "OoO issued only 0 instructions"):
+   - Dispatch (in order): rename → append to ROB AND push IQ entry (or LSQ for mem ops).
+   - Issue (out of order): every cycle scan IQ for entries whose source PRs are all ready;
+     ALU entries issue to the ALU pipe EVEN IF an older load sits in S_MEM waiting on dmem_ready.
+     NEVER freeze the whole IQ when a load misses — only the load itself waits.
+   - Completion: ALU writes result to PRF and marks ROB entry complete; load completes when
+     dcache responds. dbg_ooo_issue <= 1 cycle pulse per accepted instruction (ALU + mem, not ECALL).
+3) dbg_ooo_bypass exact predicate (spec A.2): assert on the cycle where (a) a younger ALU insn
+   issues/completes AND (b) an OLDER load is waiting on the external D port at the SAME cycle
+   (dmem_valid=1 && dmem_ready=0). One pulse per younger instruction. Gated by !rst_n && !halted.
+   If your LSU blocks all issue while mem_active is high, bypass can never fire — keep the IQ
+   issuing ALU ops during a D-Cache miss.
+4) Register renaming (spec D.3): speculative RAT + committed RAT + ready bits + free list.
+   RAW waits on producer ready; WAW/WAR eliminated by allocation. On flush: checkpoint RAT +
+   free-list head restore (D.3.1), reclaim squashed allocations, clear their ready bits.
+   PR0 never allocated. Squashed results must not pollute the recovered map.
+5) In-order commit (spec D.2): ROB head retires at most one insn/cycle only when complete and
+   (for stores) write-through accepted. dbg_reg_* reads committed map, never speculative values.
+   Final architectural state must equal in-order RV32I execution.
+6) Squash/flush plumbing: redirect carries epoch; IQ/LSQ/ROB entries younger than the redirect
+   are invalidated; older entries/results survive; icache refill responses are epoch-gated.
+"""
+RV32I_L3_BUG_PATTERNS = """L3 verified bug patterns (reference implementation went 0/21 -> 21/21 PASS; check FIRST when symptoms match):
+A) Undriven/dead wire (X propagation, can_alloc=X, total freeze): a net connected to a consumer but never driven, often a near-duplicate name (rename_stop_fetch vs out_stop_fetch; commit_has_dest vs rob_commit_has_dest). Any internal wire referenced <=2 times in the file is suspect; verify every module OUTPUT port is connected at instantiation.
+B) Multiple NBAs to the same vector in one always block: the LAST wins. A per-bit set placed BEFORE a later vector/mask assign is silently destroyed (producer never ready). Same-cycle events must not test a flag set by the same cycle's NBA (reads OLD value).
+C) Never retract an issued external request: do not gate mem_req_valid with !halted/flush; hold valid+addr until handshake; halt/flush suppress only the response (epoch gate), then freeze at the current word (external address constant after halt).
+D) Squash compare must handle 3-bit ROB wrap: `idx > squash_idx` misses younger entries across wrap. Use ((i - sq - 1) & 7) < ((tail - sq - 1) & 7); export ROB tail to IQ/LSQ.
+E) Checkpoint must capture the state AFTER the branch's own allocation (its rd mapping + own free-list dequeue), and dispatch must be suppressed on the restore cycle (restore rewrites the whole RAT; same-cycle alloc update would be clobbered).
+F) THE #1 instruction-loss bug: pipeline register written without backpressure. Capturing a fetch response into IF/ID with no (!if2id_valid || advancing) check silently overwrites an unconsumed instruction on any rename stall -> lost stores, wrong values, retire shortfall. Issue a fetch request only when IF/ID is empty or draining this cycle.
+G) Queue consistency: free-list member mask must enumerate from the same end allocation dequeues (head..head+count). A 2-entry queue with both priority-select and shift logic loses entries; use explicit head/tail/count FIFO.
+H) exit_code: latch at the ECALL commit edge from committed-RAT-mapped PRF value into a pending reg; halted and exit_code appear on the SAME next cycle. dbg_ooo_issue = iq_accept && !is_ecall || lsq_accept (once per instruction).
+"""
+
+RV32I_L3_ACTIVE_DEFECTS = """Repair state for the current rv32i5_ooo RTL (TB PASSES; one synthesizability defect remains, precisely located by bisection):
+CURRENT FAILING CHECK: synthesis_gate - yosys read_verilog hangs on rtl/rename_unit.sv. Bisection proved the exact culprit: the checkpoint-save loop in the allocation branch of the big always_comb writes a row of the 2D unpacked array with a VARIABLE row index:
+    for (i = 0; i < 32; i = i + 1) ckpt_map_nxt[alloc_slot][i] = spec_map_nxt[i];
+Variable-row-index WRITES into an unpacked 2D array make the frontend explode (removing just these 3 lines drops yosys from >15s hang to 1.1s). Variable-row READS are fine (they become muxes). The FIFO->bitmap refactor already landed and is correct; do not touch it.
+REPAIR DIRECTION (behavior-preserving, TB must stay PASS): row-decode the write so every write is constant-index:
+    for (r = 0; r < 16; r = r + 1) begin
+        if (alloc_slot == r[3:0]) begin
+            for (i = 0; i < 32; i = i + 1) ckpt_map_nxt[r][i] = spec_map_nxt[i];
+        end
+    end
+Audit rename_unit.sv for ANY other variable-index write into unpacked arrays (ckpt_map_nxt / slot_* / free_vec_nxt are safe as bit-vectors; 2D arrays are the danger) and rewrite the same way. Keep all ports/module name unchanged.
+"""
+
+
+
+
+
+
+
 RV32I_TIMING_CONSTRAINTS = """1. 复位：同步低有效，只在 clk 上升沿生效；复位期间 dmem_valid=0；PC 更新优先级：复位 > 控制转移重定向 > ECALL 停机冻结 > load-use 暂停 > PC+4。
 2. 稳态性能：直线 ALU 程序稳态 CPI=1（每拍退休一条）；load-use 暂停恰好 1 拍（冻结 PC 与 IF/ID、清 ID/EX 的 valid，不冲刷更老指令）；Taken 控制转移最多 2 个 bubble；除 load-use 与重定向冲刷外不得停顿。
 3. 停机时序：ECALL 保持有效经 ID→EX→MEM→WB（停顿期间不得丢弃）；WB/提交沿产生一次 dbg_retire_valid 且该沿 halted/exit_code 仍为 0；下一时钟沿 halted=1 且 exit_code=x10；任何周期不得出现 halted=0 且 exit_code!=0；halted=1 后所有输出与架构状态保持稳定。
@@ -92,7 +161,8 @@ RV32I_TIMING_CONSTRAINTS = """1. 复位：同步低有效，只在 clk 上升沿
 
 RV32I_ADVANCED_TIMING = """7. 分支预测事件（L2/L3）：dbg_bp_resolve 对每条有效控制转移（条件分支/JAL/JALR）在实际解析沿恰好置 1 一个周期，每条至多一个事件；dbg_bp_mispredict 仅当预测下一 PC 与实际不同，与 resolve 同拍；停顿不得重复计数，复位/冲刷后的无效项不计。
 8. 乱序事件（L3）：dbg_ooo_issue 为发射队列中有效指令被功能单元真正接受的那拍；dbg_ooo_bypass 标记"存在更老未完成 load 时，更年轻的独立整数 ALU 指令仍被发射并完成"的事件；两者必须来自真实内部状态，禁止用计数器或 PC 模式伪造。
-9. Cache 时序（L1-L3）：cache 命中下稳态 CPI≈1；miss 周期不受零等待 L0 的"load-use 恰 1 拍"约束，但 refill 期间请求必须保持、不得 abort 在途事务；store 命中只合并 byte-enable 覆盖的字节，store miss 不得装配陈旧行。"""
+9. Cache 时序（L1-L3）：cache 命中下稳态 CPI≈1；miss 周期不受零等待 L0 的"load-use 恰 1 拍"约束，但 refill 期间请求必须保持、不得 abort 在途事务；store 命中只合并 byte-enable 覆盖的字节，store miss 不得装配陈旧行。
+10. IF 响应 epoch 守卫（L2/L3，波形级实证）：I-Cache 的命中响应不做 epoch 抑制——重定向拍被接受的在途命中请求，其响应会在下一拍漏出。if_stage 必须在请求接受拍锁存 inflight_epoch，响应到达拍若 inflight_epoch != flush_epoch 则丢弃该响应（不写入 IF/ID、不推进 PC、req_pending 置 1 重新取指）。缺失此守卫的表现：retire PC/instruction does not match the loaded program（错误路径指令被贴到旧 PC 上退休）。"""
 
 CODER_SELF_CHECK = """1. 只输出本模块；端口与计划 interfaces 逐字符一致（名称/方向/位宽）；所有输出端口都被驱动；无重复声明、无多驱动。
 2. 复位为同步低有效；本模块全部状态寄存器有确定复位值；复位期间外部接口信号满足 Spec 的初始状态。
@@ -112,6 +182,8 @@ Rules:
 - Use only the evidence in the failure brief; never invent checks or errors that are not listed.
 - Map each failing check to the module most likely responsible, using the plan's module responsibilities.
 - Classify every failure as one of: functional (wrong data/control result), timing/protocol (reset, retire-pulse, halt-commit, stall/flush corner), or handshake (ready/valid misuse); the packet must state which and why in timing_notes.
+- For halt-timeout freezes, read the freeze pattern in the brief first: many tests frozen at the SAME PC is a structural stall signature (hazard/load-use or mem_stall stuck, or a lost cache response) — NOT an ECALL/halt problem; PCs marching past the program image indicate a dead halt/redirect path. Diagnose in that order.
+- The handoff's report artifact contains the full per-cycle event trace and every failed check; when the brief is not enough, re-read it for deeper evidence.
 - involved_files must be a subset of the manifest paths, ordered by suspicion, at most 6 entries.
 - If the evidence cannot narrow the problem down, list every manifest path instead of guessing a single file.
 - repair_constraints must restate the binding freezes from the plan (never rename ports/modules/files) plus anything the patch must preserve.
@@ -122,7 +194,7 @@ Rules:
 The RV32I timing corners below are the reference knowledge base for classification:
 """
 
-DIAGNOSER_SYSTEM_PROMPT += RV32I_TIMING_CONSTRAINTS + "\n" + RV32I_ADVANCED_TIMING
+DIAGNOSER_SYSTEM_PROMPT += RV32I_TIMING_CONSTRAINTS + "\n" + RV32I_ADVANCED_TIMING + "\n" + RV32I_L3_BUG_PATTERNS + "\n" + RV32I_L3_ACTIVE_DEFECTS
 
 PATCH_SYSTEM_PROMPT = """You are the Patch Agent of a digital IC design agent.
 A Diagnoser has compressed the latest teacher-TB failure into a failure packet. You receive that packet, the binding plan interfaces, and ONLY the current content of the involved files.
@@ -355,6 +427,22 @@ def build_failure_brief(report: dict[str, Any] | None) -> dict[str, Any]:
     ]
     lines = [report_summary(report)]
     hints: list[str] = []
+    wiring = report.get("wiring_check") or {}
+    if wiring.get("undriven"):
+        hints.insert(
+            0,
+            "UNDRIVEN-SIGNALS: 静态连线检查发现无驱动信号（"
+            + "、".join(wiring["undriven"][:8])
+            + "）——它们在仿真中恒为 X，会静默吞掉响应/数据。修复方式：在产生该信号的责任模块"
+            "补驱动，或在顶层把实例输出正确连到该线网；这是最高优先级修复项。",
+        )
+    if wiring.get("multi_driven"):
+        hints.insert(
+            0,
+            "MULTI-DRIVEN-SIGNALS: 静态连线检查发现多驱动信号（"
+            + "、".join(wiring["multi_driven"][:8])
+            + "）——多个驱动源冲突。保留唯一驱动，移除其余 assign/always 或实例输出连接。",
+        )
     joined = "\n".join(str(item.get("detail") or "") for item in checks)
     timeout_count = sum("等待 halted 超时" in text for text in (str(item.get("detail") or "") for item in checks))
     if timeout_count >= 2:
@@ -368,6 +456,45 @@ def build_failure_brief(report: dict[str, Any] | None) -> dict[str, Any]:
             "ICACHE/REFILL: refill 期间 imem_valid/addr 必须保持到 imem_ready；"
             "不要 abort 在途 refill；完成后安装 line，仅用 epoch 抑制过期 response。"
         )
+    if "ooo_load_overlap_rename" in joined or "no independent younger" in joined or "bypass/overlap" in joined:
+        hints.append(
+            "OOO-BYPASS: 乱序旁路要求存在更老未完成 load 等待外存时，独立的更年轻 ALU 指令"
+            "仍从发射队列被功能单元接受并完成（dbg_ooo_issue/ooo_bypass 来自真实内部状态）。"
+            "检查：①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；"
+            "②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；"
+            "③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）。"
+        )
+    if "OoO issued only 0 instructions" in joined or "missing issue evidence" in joined:
+        hints.append(
+            "ISSUE-EVIDENCE: dbg_ooo_issue 从未断言 = 整数发射队列不存在或从未乱序发射。"
+            "对照 spec D.1/D.5 检查：是否存在独立 issue_queue 模块；分派（rename→IQ 顺序入队）"
+            "与发射（IQ 乱序出队）是否分离；ALU 指令源 PR ready 即发射，不等待任何更老 load；"
+            "dbg_ooo_issue 在指令被发射队列接受的拍产生单拍脉冲。若当前实现是顺序单发射"
+            "（EX 只有一条固定通路），需要按 spec D.4 重构为 issue_queue + 独立 ALU/LSU 通路。"
+        )
+    if "retire PC/instruction does not match" in joined or "retire_pc" in joined:
+        hints.append(
+            "RETIRE-MISMATCH: 退休指令与 PC 不匹配的已实证根因——重定向拍被 I-Cache 接受的"
+            "在途命中请求，其响应会漏出（I-Cache 命中路径不做 epoch 抑制），被 if_stage 用"
+            "过期 req_pc 配对。修复：if_stage 在请求接受拍锁存 inflight_epoch，响应到达拍"
+            "若 inflight_epoch != flush_epoch 则丢弃该响应（不写 IF/ID、不推进 PC、"
+            "req_pending 置 1）；同时确认响应配对使用锁存的 req_pc 而非当前 pc 寄存器。"
+        )
+    timeout_pcs = re.findall(r"imem_addr=(0x[0-9a-fA-Fa-f]+)", joined)
+    if report.get("stage") == "simulation" and timeout_count >= 2 and timeout_pcs:
+        distinct = sorted({pc.lower() for pc in timeout_pcs})
+        if len(distinct) == 1 and len(timeout_pcs) >= 3:
+            hints.append(
+                "FREEZE-PATTERN: 多个测试的取指冻结在同一 PC（" + distinct[0]
+                + "）——这是结构性停顿的签名：优先排查 hazard/load-use 或 mem_stall 是否"
+                "卡死不释放、icache 对该取指的响应是否丢失，而不是 ECALL 停机路径。"
+            )
+        elif len(distinct) > 1:
+            hints.append(
+                "FREEZE-PATTERN: 各测试冻结在不同 PC（" + ", ".join(distinct[:4]) + "）——"
+                "若 PC 跑到程序镜像末尾之后，说明 halt/重定向未生效导致越界执行；"
+                "若冻结在固定深度的不同测试点，仍优先排查停顿逻辑。"
+            )
     compile_tail: list[str] = []
     if report.get("stage") == "compile":
         detail = (report.get("stderr") or report.get("stdout") or "").strip()
@@ -385,6 +512,20 @@ def build_failure_brief(report: dict[str, Any] | None) -> dict[str, Any]:
                 "PORT-MISMATCH: 例化端口与模块声明不一致——常见于复用模块与参考实现/新生成模块"
                 "混用导致接口约定不同。以计划 interfaces 为准统一端口，或改用同一来源的实现。"
             )
+        if "must have a single driver" in joined_real:
+            hints.append(
+                "MULTI-DRIVER: 同一信号有多个驱动源。常见于顶层把同一内部线连到多个实例输出，"
+                "或模块输出端口在内部又被 assign/always 驱动。逐一检查报错信号的驱动来源。"
+            )
+    if report.get("stage") == "simulation" and (
+        timeout_count >= 2 or len(trace_mismatches(report)) >= 4
+    ):
+        hints.append(
+            "X-SIGNAL: freeze/timeout 或大面积数据错误时，优先怀疑悬空信号（X 传播）——"
+            "iverilog 对未连接的实例端口和无驱动的内部 wire 静默产出 X。检查顶层每个实例的"
+            "端口连接是否逐一对齐模块声明（尤其 halted/flush/flush_epoch 这类控制输入），"
+            "以及内部声明是否有任何驱动。X 参与比较/选择会静默吞掉响应或数据。"
+        )
     return {
         "stage": report.get("stage"),
         "summary": report_summary(report),

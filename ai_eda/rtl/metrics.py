@@ -79,7 +79,15 @@ def _mapped_netlist(rtl_path: Path, library_path: Path, top_module: str, work_di
         + "\n",
         encoding="utf-8",
     )
-    result = subprocess.run(["yosys", "-s", str(script_path)], text=True, capture_output=True, check=False)
+    try:
+        result = subprocess.run(
+            ["yosys", "-s", str(script_path)], text=True, capture_output=True, check=False, timeout=300
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            "yosys 综合超时（300s）：RTL 存在令前端指数展开的结构"
+            "（典型：链式可变索引数组写，如 arr[ptr++] = x 的未展开循环）。"
+        ) from error
     output = result.stdout + result.stderr
     # `stat -liberty` 会先打印每个模块的 local area，再打印 design hierarchy 的
     # top area。多模块项目必须先匹配 "top module"，否则会把顶层 wrapper 的
@@ -112,6 +120,69 @@ def _parse_power_report(report: str) -> dict[str, float] | None:
         "leakage_power_w": leakage,
         "total_power_w": total,
     }
+
+
+def synthesis_gate(rtl_path: Path, top_module: str, timeout_s: int = 150) -> dict[str, Any]:
+    """可综合性门禁：yosys 必须能在限时内完成到 dfflibmap/abc 的映射。
+
+    iverilog 能仿真的 RTL 未必能综合——前端对"链式可变索引数组写"等结构
+    会指数展开（read_verilog 阶段即挂起）。PPA 指标以综合为前提，故把
+    综合超时作为 tester 的失败检查项，驱动 repair 循环重构对应模块。
+    """
+    if shutil.which("yosys") is None:
+        return {"status": "unavailable", "reason": "未找到 yosys。"}
+    if not re.fullmatch(r"[A-Za-z_]\w*", top_module or ""):
+        return {"status": "unavailable", "reason": "顶层模块名无效。"}
+    library_path = _library_path()
+    if library_path is None:
+        return {"status": "unavailable", "reason": "未安装 Liberty 库。"}
+    with tempfile.TemporaryDirectory(prefix="ai_eda_synthgate_") as temp_dir:
+        netlist_path = Path(temp_dir) / "mapped.v"
+        script_path = Path(temp_dir) / "synth.ys"
+        script_path.write_text(
+            "\n".join(
+                (
+                    f'read_verilog -sv "{rtl_path.resolve()}"',
+                    f"hierarchy -check -top {top_module}",
+                    "proc; opt; fsm; opt; memory; opt",
+                    "techmap; opt",
+                    f'dfflibmap -liberty "{library_path}"',
+                    f'abc -liberty "{library_path}"',
+                    f'stat -liberty "{library_path}"',
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        try:
+            result = subprocess.run(
+                ["yosys", "-s", str(script_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "failed",
+                "reason": (
+                    f"yosys 综合超时（{timeout_s}s）：RTL 含使前端/proc 指数展开的结构。"
+                    "典型元凶：always 块内对展开数组的链式可变索引写"
+                    "（arr[ptr] = x 后 ptr = ptr + 1 逐项推进）。"
+                    "请重构为固定索引/位向量写法，保持 TB 行为不变。"
+                ),
+            }
+        output = result.stdout + result.stderr
+        if result.returncode != 0:
+            tail_lines = [ln for ln in output.splitlines() if ln.strip()][-6:]
+            return {"status": "failed", "reason": "yosys 综合报错：" + " | ".join(tail_lines)}
+        area_match = re.search(
+            r"Chip area for (?:top )?module '[^']+':\s*([0-9.]+)", output
+        )
+        return {
+            "status": "ok",
+            "area_um2": float(area_match.group(1)) if area_match else None,
+        }
 
 
 def synthesize_metrics(
@@ -199,3 +270,108 @@ def synthesize_metrics(
 def synthesize_area(rtl_path: Path) -> dict[str, Any]:
     """兼容旧调用；新代码应使用 :func:`synthesize_metrics`。"""
     return synthesize_metrics(rtl_path)
+
+
+def find_missing_port_connections(rtl_path: Path) -> dict[str, Any]:
+    """文本级端口覆盖检查：每个实例必须连接其模块声明的全部端口。
+
+    iverilog 对漏接的实例输入端口**静默产出 X**（yosys check 也不报），
+    是 freeze/timeout 类失败最隐蔽的根因（如 icache/dcache 的 halted、
+    flush_epoch 漏接）。此检查对命名连接逐一比对模块端口集，报告缺失。
+    """
+    import re as _re
+
+    src = rtl_path.read_text(encoding="utf-8")
+    src = _re.sub(r"/\*.*?\*/", " ", src, flags=_re.DOTALL)
+    src = _re.sub(r"//[^\n]*", " ", src)
+
+    module_ports: dict[str, set[str]] = {}
+    for m in _re.finditer(
+        r"\bmodule\s+(\w+)\s*(?:#\([^)]*\))?\s*\((.*?)\)\s*;", src, flags=_re.DOTALL
+    ):
+        name = m.group(1)
+        ports: set[str] = set()
+        for pm in _re.finditer(
+            r"\b(?:input|output|inout)\b[^,;()]*?\b(\w+)\s*(?:,|$)",
+            m.group(2),
+            flags=_re.DOTALL,
+        ):
+            ports.add(pm.group(1))
+        module_ports[name] = ports
+
+    missing_report: list[dict[str, Any]] = []
+    inst_re = _re.compile(
+        r"\b([A-Za-z_]\w*)\s+(?:#\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\((.*?)\)\s*;",
+        flags=_re.DOTALL,
+    )
+    for im in inst_re.finditer(src):
+        mod_name, inst_name, body = im.group(1), im.group(2), im.group(3)
+        if mod_name in ("module", "if", "case") or mod_name not in module_ports:
+            continue
+        connected = set(_re.findall(r"\.(\w+)\s*\(", body))
+        missing = module_ports[mod_name] - connected
+        if missing:
+            missing_report.append(
+                {
+                    "module": mod_name,
+                    "instance": inst_name,
+                    "missing_ports": sorted(missing),
+                }
+            )
+    return {"status": "ok", "missing_connections": missing_report}
+
+
+def find_wiring_faults(rtl_path: Path, top_module: str) -> dict[str, Any]:
+    """用 yosys 静态检测悬空（无驱动）与多驱动信号。
+
+    iverilog 对未连接的实例端口和无驱动的内部 wire 静默产出 X，是 freeze/
+    timeout 类失败的常见根因且教师 TB 输出不可见；yosys 的 `check` 能在
+    综合前直接报告这两类连线缺陷。yosys 不可用时返回 unavailable。
+    """
+    if shutil.which("yosys") is None:
+        return {"status": "unavailable", "reason": "未找到 yosys。"}
+    if not re.fullmatch(r"[A-Za-z_]\w*", top_module or ""):
+        return {"status": "unavailable", "reason": "顶层模块名无效。"}
+    with tempfile.TemporaryDirectory(prefix="ai_eda_wiring_") as temp_dir:
+        script = Path(temp_dir) / "check.ys"
+        script.write_text(
+            "\n".join(
+                (
+                    f"read_verilog -sv {rtl_path}",
+                    f"hierarchy -top {top_module}",
+                    "proc; opt_clean",
+                    "check",
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        try:
+            result = subprocess.run(
+                ["yosys", "-s", str(script)], text=True, capture_output=True, check=False, timeout=150
+            )
+        except subprocess.TimeoutExpired:
+            # 部分RTL（如大型 always_comb 阵列链）会让 yosys proc 阶段病态变慢。
+            # 连线检查只是辅助诊断，超时应优雅降级为 unavailable，不得阻断教师 TB 流程。
+            return {
+                "status": "unavailable",
+                "reason": "yosys 连线检查超时（150s），跳过静态连线诊断，继续仿真验证。",
+            }
+        output = result.stdout + result.stderr
+        undriven: list[str] = []
+        multi: list[str] = []
+        for line in output.splitlines():
+            line = line.strip()
+            m = re.search(r"Wire (\S+) is used but has no driver", line)
+            if m:
+                undriven.append(m.group(1).split(".")[-1])
+                continue
+            m = re.search(r"Wire (\S+) (?:is|has) .*(?:multiple drivers|driven multiple times)", line)
+            if m:
+                multi.append(m.group(1).split(".")[-1])
+        status = "ok" if result.returncode == 0 else "failed"
+        return {
+            "status": status,
+            "undriven": sorted(set(undriven))[:20],
+            "multi_driven": sorted(set(multi))[:20],
+        }

@@ -212,11 +212,11 @@ def _seed_resume_project(
 def run_agent(
     *,
     thinking: bool = True,
-    reasoning_effort: str = "low",
+    reasoning_effort: str = "max",
     temperature: float = 0.2,
-    max_tokens: int = 60000,
+    max_tokens: int = 200000,
     max_calls: int = 100,
-    max_repair_attempts: int = 8,
+    max_repair_attempts: int = 4,
     planner_skill: bool = False,
     resume_from: str | None = None,
     node_thinking: dict[str, bool] | None = None,
@@ -226,6 +226,8 @@ def run_agent(
     design_name: str | None = None,
     project_id: str | None = None,
     request_input: Callable[[dict[str, Any]], str] | None = None,
+    area_budget_um2: float | None = None,
+    power_budget_w: float | None = None,
 ) -> dict[str, Any]:
     """运行固定流水线：Parser → Planner → Coder → Tester ⇄ Diagnoser → Patch。
 
@@ -243,6 +245,11 @@ def run_agent(
         raise ValueError("max_repair_attempts 必须在 1 到 10 之间")
     max_tester_attempts = int(max_repair_attempts) + 1
     project = get_project(project_id)
+    # 每作业 PPA 预算覆盖（岛屿式优化用）：请求级预算优先于项目默认
+    if area_budget_um2 is not None:
+        project = {**project, "area_budget_um2": area_budget_um2}
+    if power_budget_w is not None:
+        project = {**project, "power_budget_w": power_budget_w}
     spec_base = agent_task_spec(project["id"])
     run_id = f"agent-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}"
     run_dir = AGENT_RUNS_ROOT / run_id
@@ -491,6 +498,30 @@ def run_agent(
         tester = TesterAgent(context)
         diagnoser = DiagnoserAgent(context)
         patch = PatchAgent(context)
+        # 修复退化防护：每轮验收后快照 RTL；若新一轮的 suite 通过数低于历史
+        # 最佳，回退到最佳快照再让 Diagnoser 换方向——修复不许比现在更糟。
+        checkpoints_dir = run_dir / "checkpoints"
+        checkpoints_dir.mkdir(exist_ok=True)
+        best: dict[str, Any] | None = None
+
+        def _suite_score(rep: dict[str, Any]) -> int:
+            return sum(
+                1 for s in (rep.get("test_suites") or []) if s.get("passed")
+            )
+
+        def _snapshot(tag: str) -> None:
+            dst = checkpoints_dir / tag
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(run_dir / "project", dst)
+
+        def _restore(tag: str) -> None:
+            src = checkpoints_dir / tag
+            project_root = run_dir / "project"
+            if project_root.exists():
+                shutil.rmtree(project_root)
+            shutil.copytree(src, project_root)
+
         while True:
             tester_attempts += 1
             tester_handoff = tester.run(next_tester_input, tester_attempts)
@@ -505,11 +536,64 @@ def run_agent(
             final_report = report
             if report.get("passed"):
                 break
+            score = _suite_score(report)
+            if best is None or score > best["score"]:
+                best = {"score": score, "attempt": tester_attempts}
+                _snapshot(f"best_attempt{tester_attempts}_score{score}")
             if tester_attempts >= int(max_tester_attempts):
                 break
             check_cancel()
-            diagnoser_handoff = diagnoser.run(tester_handoff, tester_attempts)
-            next_tester_input = patch.run(diagnoser_handoff, tester_attempts)
+            if best is not None and score < best["score"]:
+                # 本轮修复造成退化：回退到历史最佳，由下一轮 Diagnoser 换方向。
+                _restore(f"best_attempt{best['attempt']}_score{best['score']}")
+                rtl_dir = run_dir / "project" / "rtl"
+                entries = [
+                    {
+                        "path": f"rtl/{p.name}",
+                        "artifact": context.artifact_ref(p),
+                        "bytes": p.stat().st_size,
+                    }
+                    for p in sorted(rtl_dir.glob("*.sv"))
+                ]
+                manifest_ref = context.write_json_artifact(
+                    f"rtl_manifest_restore{tester_attempts}.json", {"files": entries}
+                )
+                next_tester_input = context.write_handoff(
+                    "patch",
+                    "tester",
+                    {
+                        "attempt": tester_attempts,
+                        "changed_paths": [],
+                        "notes": f"restored best checkpoint attempt{best['attempt']}",
+                        "artifacts": {
+                            "spec": tester_artifacts.get("spec"),
+                            "plan": tester_artifacts.get("plan"),
+                            "rtl_manifest": manifest_ref,
+                        },
+                    },
+                    attempt=tester_attempts,
+                    label=f"Restore best checkpoint (score {best['score']})",
+                )
+                round_event = begin_event(
+                    "restore", "controller",
+                    f"Round {tester_attempts} regressed",
+                    f"suites {score} < best {best['score']}; restored checkpoint",
+                    tester_attempts,
+                )
+                finish_event(round_event, "info")
+                continue
+            try:
+                diagnoser_handoff = diagnoser.run(tester_handoff, tester_attempts)
+                next_tester_input = patch.run(diagnoser_handoff, tester_attempts)
+            except ValueError as error:
+                # 本轮修复失败（如 Patch 连续无法给出有效修改）：记录后继续消耗预算，
+                # 让 Diagnoser 基于累积的已证伪假设重新分析，而不是中止整个运行。
+                round_event = begin_event(
+                    "repair", "controller",
+                    f"Repair round {tester_attempts} failed", str(error)[:500], tester_attempts,
+                )
+                finish_event(round_event, "failed", error=str(error))
+                continue
 
         if final_report is None:
             raise ValueError("Tester 没有产出验收报告")
