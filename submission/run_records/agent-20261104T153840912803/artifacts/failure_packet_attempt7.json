@@ -1,0 +1,73 @@
+{
+  "attempt": 7,
+  "category": "simulation",
+  "root_cause": "The teacher TB is functionally clean (trace_mismatches/failing_suites empty, return_code 0); the sole failure is the non-functional PPA area gate: 215588 library units versus the 190000 budget (~13.5% over). The overshoot is in over-provisioned storage arrays — the multi-checkpoint rename map, cache line arrays, and wide queue/ROB/LSU entries — so the repair must be an equivalence-preserving area reduction rather than a datapath or control-timing change.",
+  "failing_checks": [
+    "ppa_area_budget"
+  ],
+  "involved_files": [
+    "rtl/rename_unit.sv",
+    "rtl/dcache.sv",
+    "rtl/icache.sv",
+    "rtl/issue_queue.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Never rename ports, modules, or files; preserve the listed interface contract exactly.",
+    "Teacher TB must remain PASS: architecture-visible behavior, debug outputs, retirement trace, and all dbg_* signals unchanged.",
+    "Area edits must be equivalence-preserving: reduce checkpoint/table entries, cache rows, and unused wide payload fields without changing functionality.",
+    "Preserve halt/ECALL timing: ECALL remains valid through the pipe, exactly one dbg_retire_valid at commit, halted=1 and exit_code=x10 on the next edge, and stable outputs after halt.",
+    "Preserve memory/cache handshakes: at most one in-flight external request, hold valid/addr until ready, do not abort refills, and keep flush/epoch guards intact.",
+    "Keep rename_unit synthesizable: no variable-row writes to unpacked 2D arrays; use constant-index row decode so yosys read_verilog does not hang again."
+  ],
+  "evidence": "Brief: \"stage\": \"simulation\"; \"summary\": \"Teacher TB failed (Simulation); failed checks: ppa_area_budget.\"; detail: \"面积 215588 超预算 190000.0（ library 单位）... 降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。\"; trace_mismatches [], compile_error_tail [], return_code 0.",
+  "previous_hypotheses": [
+    {
+      "attempt": 3,
+      "root_cause": "This is not a functional, timing or handshake failure: the teacher TB is functionally clean (trace_mismatches empty, failing_suites empty, return_code 0) and the only failing check is the non-functional PPA gate — synthesized area 215237 library units vs the 190000 budget (~13% over). The dominant storage sink is the rename checkpoint map in rename_unit (≈16 checkpoints × 32 entries × 6-bit pdst ≈",
+      "patched_files": [
+        "rtl/branch_predictor.sv",
+        "rtl/dcache.sv",
+        "rtl/icache.sv",
+        "rtl/issue_queue.sv",
+        "rtl/reorder_buffer.sv"
+      ]
+    },
+    {
+      "attempt": 5,
+      "root_cause": "This is a pure PPA area-gate failure, not a functional bug: the teacher TB is clean (trace_mismatches empty, failing_suites empty, return_code 0), but synthesized area is 215237 vs the 190000-library-unit budget. Two prior equivalence-preserving area rounds already edited dcache/icache/issue_queue/load_store_unit/reorder_buffer/rename_unit/branch_predictor without moving the gate, so the dominant ",
+      "patched_files": [
+        "rtl/commit_unit.sv",
+        "rtl/execute_alu.sv",
+        "rtl/id_stage.sv",
+        "rtl/physical_register_file.sv"
+      ]
+    },
+    {
+      "attempt": 6,
+      "root_cause": "The actionable failure is a synthesis/compile front-end hang, not a functional, timing, or handshake bug: the TB is clean and passes with no trace mismatches, but yosys read_verilog hangs on rtl/rename_unit.sv. Bisection located the exact culprit in the checkpoint-save loop of the allocation branch, where a row of the 2D unpacked checkpoint map is written with a variable row index (ckpt_map_nxt[al",
+      "patched_files": [
+        "rtl/rename_unit.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_area_budget.",
+    "failed_checks": [
+      {
+        "name": "ppa_area_budget",
+        "detail": "面积 215588 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

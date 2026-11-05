@@ -1,0 +1,68 @@
+{
+  "attempt": 5,
+  "category": "simulation",
+  "root_cause": "This is a pure PPA area-gate failure, not a functional bug: the teacher TB is clean (trace_mismatches empty, failing_suites empty, return_code 0), but synthesized area is 215237 vs the 190000-library-unit budget. Two prior equivalence-preserving area rounds already edited dcache/icache/issue_queue/load_store_unit/reorder_buffer/rename_unit/branch_predictor without moving the gate, so the dominant area sinks are most likely in the modules not yet audited: the top-level rv32i5.sv (largest file at ~30KB, holding integration muxing, wide debug/retire-trace state and any shadow/duplicated arrays), the 64x32 physical register file (largest flop array), and the id_stage decode/control cone; execute_alu, if_stage and commit_unit are secondary contributors. The repair should be an equivalence-preserving area reduction concentrated there (remove unconsumed wide fields, share decode/mux terms, reduce PRF/checkpoint-style redundancy and any shadow state in the top level), leaving all TB-visible behavior untouched.",
+  "failing_checks": [
+    "ppa_area_budget"
+  ],
+  "involved_files": [
+    "rtl/rv32i5.sv",
+    "rtl/physical_register_file.sv",
+    "rtl/id_stage.sv",
+    "rtl/execute_alu.sv",
+    "rtl/if_stage.sv",
+    "rtl/commit_unit.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename or remove any port, module, or file; the interface contract for rv32i5, icache, dcache, branch_predictor, if_stage, id_stage, rename_unit, physical_register_file, issue_queue, execute_alu, load_store_unit, reorder_buffer and commit_unit stays byte-for-byte identical.",
+    "The change must be equivalence-preserving: the teacher TB must remain fully PASS (no trace_mismatches, no failing_suites) while area drops below 190000 library units.",
+    "Preserve debug-event semantics exactly: one single-cycle dbg_retire_valid per committed instruction (load/store/branch/NOP/rd=x0/ECALL), correct dbg_bp_resolve/dbg_bp_mispredict timing, dbg_ooo_issue/dbg_ooo_bypass from real state, and halted=1 with exit_code=x10 on the cycle after ECALL commit (never halted=0 with exit_code!=0).",
+    "Preserve external handshake behavior: at most one in-flight imem/dmem request, valid/addr held until ready, no aborting of in-flight cache transactions, and the if_stage IF-response epoch guard (drop stale-epoch responses and re-fetch) must remain intact.",
+    "Keep the RTL synthesizable: no variable-row-index writes into unpacked 2D arrays (use constant-index row decode), no undriven internal nets, and no multiple nonblocking assignments to the same vector in one always block.",
+    "Trim only genuinely unconsumed wide fields/state; anything a TB check or internal consumer uses must keep identical value and timing.",
+    "Do not re-patch the already-edited cache/IQ/LSU/ROB/rename/BP files on speculation; if they must be re-evaluated, first restore the verified baseline and re-run the TB before changing them again."
+  ],
+  "evidence": "Brief: \"stage\": \"simulation\"; \"summary\": \"Teacher TB failed (Simulation); failed checks: ppa_area_budget.\"; detail: \"面积 215237 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。\"; \"trace_mismatches\": []; \"failing_suites\": []; \"return_code\": 0. Manifest sizes: rtl/rv32i5.sv 29905 bytes (largest, untouched), rtl/physical_register_file.sv 4109 bytes (64x32 state), rtl/id_stage.sv 10215 bytes, rtl/execute_alu.sv 6171 bytes, rtl/if_stage.sv 6827 bytes, rtl/commit_unit.sv 3422 bytes.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The only failing check is the PPA area gate: synthesized area 215237 exceeds the 190000-library-unit budget by ~13%. There is no data/control, protocol, or timing mismatch (trace_mismatches empty, failing_suites empty, return_code 0) — the design is functionally correct and the repair is an equivalence-preserving area reduction. The three named hotspots are redundant checkpoint/table storage (rena",
+      "patched_files": [
+        "rtl/dcache.sv",
+        "rtl/icache.sv",
+        "rtl/issue_queue.sv",
+        "rtl/load_store_unit.sv",
+        "rtl/rename_unit.sv",
+        "rtl/reorder_buffer.sv"
+      ]
+    },
+    {
+      "attempt": 3,
+      "root_cause": "This is not a functional, timing or handshake failure: the teacher TB is functionally clean (trace_mismatches empty, failing_suites empty, return_code 0) and the only failing check is the non-functional PPA gate — synthesized area 215237 library units vs the 190000 budget (~13% over). The dominant storage sink is the rename checkpoint map in rename_unit (≈16 checkpoints × 32 entries × 6-bit pdst ≈",
+      "patched_files": [
+        "rtl/branch_predictor.sv",
+        "rtl/dcache.sv",
+        "rtl/icache.sv",
+        "rtl/issue_queue.sv",
+        "rtl/reorder_buffer.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_area_budget.",
+    "failed_checks": [
+      {
+        "name": "ppa_area_budget",
+        "detail": "面积 215237 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

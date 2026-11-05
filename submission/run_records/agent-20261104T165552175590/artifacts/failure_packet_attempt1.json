@@ -1,0 +1,48 @@
+{
+  "attempt": 1,
+  "category": "simulation",
+  "root_cause": "The OoO overlap benchmark never observes a younger independent ALU instruction issuing/completing while an older load is waiting on external memory. The primary suspect is the issue-queue selection/wakeup path serializing ALU issue behind an outstanding load (or gating ALU issue on load completion), with a secondary suspect in the top-level completion/debug wiring: alu_complete_valid/rob_index must be driven into the ROB, and dbg_ooo_bypass must be generated from real load-pending/ALU-issue state. Because trace_mismatches is empty and only this performance check fails, fetch/rename/commit and halt timing are not the primary fault.",
+  "failing_checks": [
+    "bench_ooo_overlap64"
+  ],
+  "involved_files": [
+    "rtl/issue_queue.sv",
+    "rtl/rv32i5.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/execute_alu.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Keep every module name, file name, port name, port direction and port width exactly as specified in the plan interface contract; do not rename or remove ports/modules/files.",
+    "Preserve currently passing behavior: synchronous active-low reset, PC priority reset > redirect > ECALL freeze > load-use stall > PC+4, and dcache/imem valid deassertion during reset.",
+    "Preserve one dbg_retire_valid pulse per genuinely committed instruction, at most one retirement per cycle, no duplicate retirement during stalls, and no retire event for squashed/invalid entries.",
+    "Preserve ECALL halt timing: ECALL remains valid through ID/EX/MEM/WB, retire pulse occurs while halted/exit_code are still 0, and halted=1 with exit_code=x10 on the following edge with stable outputs afterward.",
+    "Preserve external handshake semantics: one outstanding request per interface, hold valid/address until ready, do not abort in-flight cache/memory requests on flush/halt, and keep the IF response epoch guard intact.",
+    "dbg_ooo_issue and dbg_ooo_bypass must be derived from real internal issue/completion state, at most one event per cycle, and must not be faked with counters or PC-pattern detectors; dbg_ooo_bypass must specifically mark a younger independent ALU issuing/completing while an older load is unfinished.",
+    "Do not regress load/store byte-enable merging, EX/MEM-priority forwarding, MEM/WB load forwarding, branch/JALR operand forwarding, or same-cycle PRF read/write behavior.",
+    "Preserve the already-landed rename FIFO/bitmap refactor; the known rename_unit variable-row-index synthesis hang is a separate issue and is not the cause of the bench_ooo_overlap64 simulation failure."
+  ],
+  "evidence": "summary: 'Teacher TB failed (Simulation); failed checks: bench_ooo_overlap64'; detail: 'OoO benchmark saw no bypass/overlap while the load was waiting'; hints: check whether the issue queue really allows ALU and load to issue in parallel rather than serial single-issue, whether alu_complete_valid/rob_idx is driven and connected to the ROB, and whether dbg_ooo_bypass is counted from real issue logic rather than a counter; trace_mismatches is empty.",
+  "previous_hypotheses": [],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: bench_ooo_overlap64.",
+    "failed_checks": [
+      {
+        "name": "bench_ooo_overlap64",
+        "detail": "OoO benchmark saw no bypass/overlap while the load was waiting"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [
+      "performance_correctness"
+    ],
+    "compile_error_tail": [],
+    "hints": [
+      "OOO-BYPASS: 乱序旁路要求存在更老未完成 load 等待外存时，独立的更年轻 ALU 指令仍从发射队列被功能单元接受并完成（dbg_ooo_issue/ooo_bypass 来自真实内部状态）。检查：①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）。"
+    ],
+    "return_code": 1
+  }
+}

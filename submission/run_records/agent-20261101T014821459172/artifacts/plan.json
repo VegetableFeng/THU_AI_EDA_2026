@@ -1,0 +1,98 @@
+{
+  "project_name": "rv32i5_l3_ooo_cache_bp",
+  "top_module": "rv32i5",
+  "modules": [
+    {
+      "name": "rv32i5",
+      "file": "rtl/rv32i5.sv",
+      "description": "Top-level connection and global control only. Instantiates I/D caches, fetch/decode, branch predictor, rename/issue/ALU/LSU/ROB/PRF/commit, wires the frozen internal contracts, exposes the exact §A external ports, holds dbg_features=3'b111, maintains the 2-bit global flush_epoch (reset=0, increments on branch flush or ECALL-pending start), and masks debug events when rst_n=0 or halted=1. No duplicate pipeline timing logic in top.",
+      "interfaces": "input logic clk; input logic rst_n; output logic [31:0] imem_addr; input logic [31:0] imem_rdata; output logic imem_valid; input logic imem_ready; output logic dmem_valid; output logic dmem_we; output logic [31:0] dmem_addr; output logic [31:0] dmem_wdata; output logic [3:0] dmem_be; input logic [31:0] dmem_rdata; input logic dmem_ready; input logic [4:0] dbg_reg_addr; output logic [31:0] dbg_reg_data; output logic halted; output logic [31:0] exit_code; output logic [2:0] dbg_features; output logic dbg_retire_valid; output logic [31:0] dbg_retire_pc; output logic [31:0] dbg_retire_insn; output logic dbg_bp_resolve; output logic dbg_bp_mispredict; output logic dbg_ooo_issue; output logic dbg_ooo_bypass",
+      "reuse": false
+    },
+    {
+      "name": "icache",
+      "file": "rtl/icache.sv",
+      "description": "256-byte direct-mapped 16-line/16-byte I-cache with 4-word refill FSM. Owns I-cache valid/tag/data install, CPU request/response handshake, epoch-tagged response discard, branch-flush cancellation of unaccepted requests, stable imem valid/address during wait, reset clearing all valid bits, and halted idle/address hold behavior. Outputs idle only when no accepted refill remains and no external request is outstanding.",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic [1:0] flush_epoch; input logic halted; input logic cpu_req_valid; input logic [31:0] cpu_req_addr; input logic [1:0] cpu_req_epoch; output logic cpu_req_ready; output logic cpu_resp_valid; output logic [31:0] cpu_resp_data; output logic [1:0] cpu_resp_epoch; output logic mem_req_valid; input logic mem_req_ready; output logic [31:0] mem_req_addr; input logic mem_resp_valid; input logic [31:0] mem_resp_data; output logic idle",
+      "reuse": false
+    },
+    {
+      "name": "dcache",
+      "file": "rtl/dcache.sv",
+      "description": "256-byte direct-mapped 16-line/16-byte D-cache, write-through plus write-allocate. Owns D refill/write-through FSM, byte-lane merge, CPU request/response handshake, write-through acceptance before store_done, epoch/rob-tag discard, preserving older valid memory operations on branch flush, stable dmem valid/addr/wdata/be during wait, reset clearing valid state, halted zero-valid/address hold behavior, and idle indication for ECALL halt drain.",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic [1:0] flush_epoch; input logic [3:0] flush_rob_index; input logic halted; input logic cpu_req_valid; input logic cpu_req_we; input logic [31:0] cpu_req_addr; input logic [31:0] cpu_req_wdata; input logic [3:0] cpu_req_be; input logic [3:0] cpu_req_rob_index; input logic [1:0] cpu_req_epoch; output logic cpu_req_ready; output logic cpu_resp_valid; output logic [31:0] cpu_resp_rdata; output logic [1:0] cpu_resp_epoch; output logic mem_req_valid; input logic mem_req_ready; output logic mem_req_we; output logic [31:0] mem_req_addr; output logic [31:0] mem_req_wdata; output logic [3:0] mem_req_be; input logic mem_resp_valid; input logic [31:0] mem_resp_data; output logic dcache_mem_wait; output logic idle",
+      "reuse": false
+    },
+    {
+      "name": "branch_predictor",
+      "file": "rtl/branch_predictor.sv",
+      "description": "16-entry direct-mapped BTB plus 16-entry 2-bit saturating BHT. Provides the IF-stage predicted next PC/target/type/hit combinationally, trains BTB target/type and condition direction from execute_alu resolve events, resets BHT to weak-not-taken and clears BTB only on reset; branch flush does not clear trained state.",
+      "interfaces": "input logic clk; input logic rst_n; input logic pred_req_valid; input logic [31:0] pred_req_pc; output logic [31:0] pred_next_pc; output logic pred_taken; output logic [1:0] pred_type; output logic pred_hit; input logic resolve_valid; input logic [31:0] resolve_pc; input logic [31:0] resolve_actual_next_pc; input logic resolve_taken; input logic [1:0] resolve_type",
+      "reuse": false
+    },
+    {
+      "name": "if_stage",
+      "file": "rtl/if_stage.sv",
+      "description": "Front-end PC/fetch stage. Owns PC update priority reset > branch redirect > ECALL/halted stop > I-cache request/backpressure > predicted next PC, I-cache request/response holding, epoch check, predictor lookup, and fetch-valid handshake to ID using id_ready. It stalls on I-cache wait/structural backpressure and never issues requests when halted or ECALL pending.",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic [31:0] redirect_pc; input logic [1:0] flush_epoch; input logic halted; input logic ecall_pending; input logic id_ready; output logic fetch_valid; output logic [31:0] fetch_pc; output logic [31:0] fetch_insn; output logic [31:0] fetch_pred_next_pc; output logic fetch_pred_taken; output logic [1:0] fetch_pred_type; output logic fetch_pred_hit; output logic cpu_req_valid; output logic [31:0] cpu_req_addr; output logic [1:0] cpu_req_epoch; input logic cpu_req_ready; input logic cpu_resp_valid; input logic [31:0] cpu_resp_data; input logic [1:0] cpu_resp_epoch; output logic pred_req_valid; output logic [31:0] pred_req_pc; input logic [31:0] pred_next_pc; input logic pred_taken; input logic [1:0] pred_type; input logic pred_hit",
+      "reuse": false
+    },
+    {
+      "name": "id_stage",
+      "file": "rtl/id_stage.sv",
+      "description": "Combinational RV32I decode/ID stage. Decodes all required RV32I ops, immediates, load/store size/control, ECALL exact-word detection, register/immediate ALU controls, and passes predictor metadata. It has no hazard state of its own; flush/halted/ecall-pending gate id_valid, and id_ready from rename provides structural backpressure.",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic halted; input logic ecall_pending; input logic fetch_valid; input logic [31:0] fetch_pc; input logic [31:0] fetch_insn; input logic [31:0] fetch_pred_next_pc; input logic fetch_pred_taken; input logic [1:0] fetch_pred_type; input logic fetch_pred_hit; output logic id_valid; output logic [31:0] id_pc; output logic [31:0] id_insn; output logic [4:0] id_rs1; output logic [4:0] id_rs2; output logic [4:0] id_rd; output logic [31:0] id_imm; output logic [4:0] id_alu_op; output logic [2:0] id_wb_sel; output logic id_is_load; output logic id_is_store; output logic [1:0] id_mem_size; output logic id_is_branch; output logic id_is_jal; output logic id_is_jalr; output logic id_is_ecall; output logic id_reg_write; output logic id_use_imm; output logic id_is_auipc; output logic [31:0] id_pred_next_pc; output logic id_pred_taken; output logic [1:0] id_pred_type; output logic id_pred_hit",
+      "reuse": false
+    },
+    {
+      "name": "rename_unit",
+      "file": "rtl/rename_unit.sv",
+      "description": "Register renamer with speculative/committed RAT, PR ready table, free list PR32..PR39 initial and PR0..PR31 initial mapping, and 8 checkpoint snapshots indexed by rob index for in-flight control transfers. Owns WAW/WAR renaming, source-ready generation, ROB/IQ/LSU backpressure, checkpoint save after control-transfer allocation, and checkpoint restore on flush. This module, not a separate hazard_unit, owns register-dependency stalls; load-result wakeup is also broadcast to issue_queue and LSU.",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic [3:0] flush_rob_index; input logic halted; input logic ecall_pending; input logic id_valid; output logic id_ready; input logic [31:0] id_pc; input logic [31:0] id_insn; input logic [4:0] id_rs1; input logic [4:0] id_rs2; input logic [4:0] id_rd; input logic [31:0] id_imm; input logic [4:0] id_alu_op; input logic [2:0] id_wb_sel; input logic id_is_load; input logic id_is_store; input logic [1:0] id_mem_size; input logic id_is_branch; input logic id_is_jal; input logic id_is_jalr; input logic id_is_ecall; input logic id_reg_write; input logic id_use_imm; input logic id_is_auipc; input logic [31:0] id_pred_next_pc; input logic id_pred_taken; input logic [1:0] id_pred_type; input logic id_pred_hit; output logic rob_alloc_valid; input logic rob_alloc_ready; input logic [3:0] rob_alloc_index; output logic [31:0] rob_alloc_pc; output logic [31:0] rob_alloc_insn; output logic [5:0] rob_alloc_pdst; output logic [5:0] rob_alloc_o",
+      "reuse": false
+    },
+    {
+      "name": "physical_register_file",
+      "file": "rtl/physical_register_file.sv",
+      "description": "40-entry x 32-bit physical register file with two independent IQ read ports, two independent LSU read ports, and two completion write ports (ALU and load). PR0 is permanently x0=0; reset clears all 40 PR values. No control/hazard logic is duplicated here.",
+      "interfaces": "input logic clk; input logic rst_n; input logic [5:0] iq_prf_rs1_addr; input logic [5:0] iq_prf_rs2_addr; output logic [31:0] iq_prf_rdata1; output logic [31:0] iq_prf_rdata2; input logic [5:0] lsu_prf_rs1_addr; input logic [5:0] lsu_prf_rs2_addr; output logic [31:0] lsu_prf_rdata1; output logic [31:0] lsu_prf_rdata2; input logic alu_complete_valid; input logic [5:0] alu_complete_prd; input logic [31:0] alu_complete_data; input logic load_complete_valid; input logic [5:0] load_complete_prd; input logic [31:0] load_complete_data",
+      "reuse": false
+    },
+    {
+      "name": "issue_queue",
+      "file": "rtl/issue_queue.sv",
+      "description": "8-entry integer issue queue with single-issue out-of-order wakeup/select. Owns dependency readiness (the L3 replacement for classic load-use stall logic), ALU/load completion wakeup, oldest-ready arbitration, structural backpressure via iq_disp_ready, flush squashing of younger entries by rob index, and real dbg_ooo_bypass pulse generation when an independent younger ALU issues while an older load is waiting on external D memory.",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic [3:0] flush_rob_index; input logic [3:0] rob_head_index; input logic halted; input logic iq_disp_valid; output logic iq_disp_ready; input logic [31:0] iq_disp_pc; input logic [31:0] iq_disp_insn; input logic [3:0] iq_disp_rob_index; input logic [5:0] iq_disp_prs1; input logic [5:0] iq_disp_prs2; input logic [5:0] iq_disp_pdst; input logic iq_disp_rs1_ready; input logic iq_disp_rs2_ready; input logic [31:0] iq_disp_imm; input logic [4:0] iq_disp_alu_op; input logic [2:0] iq_disp_wb_sel; input logic iq_disp_is_branch; input logic iq_disp_is_jal; input logic iq_disp_is_jalr; input logic iq_disp_use_imm; input logic iq_disp_is_auipc; input logic [31:0] iq_disp_pred_next_pc; input logic iq_disp_pred_taken; input logic [1:0] iq_disp_pred_type; input logic alu_complete_valid; input logic [5:0] alu_complete_prd; input logic load_complete_valid; input logic [5:0] load_complete_prd; output logic [5:0] iq_prf_rs1_addr; output logi",
+      "reuse": false
+    },
+    {
+      "name": "execute_alu",
+      "file": "rtl/execute_alu.sv",
+      "description": "Single integer ALU and control-resolution unit. Consumes issued operands and PRF-read values, computes RV32I ALU/shift/compare/LUI/AUIPC results, JAL/JALR link/targets, branch conditions and actual next PC, produces ALU completion to PRF/ROB/rename/IQ, and produces one resolve event per valid control transfer. It owns branch target/direction resolution and mispredict detection but not flush arbitration.",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic halted; input logic issue_valid; output logic issue_ready; input logic [31:0] issue_pc; input logic [31:0] issue_insn; input logic [3:0] issue_rob_index; input logic [5:0] issue_prs1; input logic [5:0] issue_prs2; input logic [5:0] issue_pdst; input logic [31:0] issue_operand1; input logic [31:0] issue_operand2; input logic [31:0] issue_imm; input logic [4:0] issue_alu_op; input logic [2:0] issue_wb_sel; input logic issue_is_branch; input logic issue_is_jal; input logic issue_is_jalr; input logic issue_use_imm; input logic issue_is_auipc; input logic [31:0] issue_pred_next_pc; input logic issue_pred_taken; input logic [1:0] issue_pred_type; output logic alu_complete_valid; output logic [3:0] alu_complete_rob_index; output logic [5:0] alu_complete_prd; output logic [31:0] alu_complete_data; output logic resolve_valid; output logic [3:0] resolve_rob_index; output logic [31:0] resolve_pc; output logic [31:0] resolve_actual",
+      "reuse": false
+    },
+    {
+      "name": "load_store_unit",
+      "file": "rtl/load_store_unit.sv",
+      "description": "2-entry in-order load/store queue and LSU. Owns memory-order enforcement, source-ready/wakeup for memory operands, D-cache CPU request/response handshake, load lane selection/sign extension, store address/data/byte-enable generation, store issuance only after ROB store_commit, store_done only after D-cache/write-through acceptance, flush squashing of younger memory entries, and real external D-wait detection for ooo bypass observation. It does not use a separate hazard_unit.",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic [3:0] flush_rob_index; input logic [1:0] flush_epoch; input logic halted; input logic lsu_disp_valid; output logic lsu_disp_ready; input logic [31:0] lsu_disp_pc; input logic [31:0] lsu_disp_insn; input logic [3:0] lsu_disp_rob_index; input logic [5:0] lsu_disp_prs1; input logic [5:0] lsu_disp_prs2; input logic [5:0] lsu_disp_pdst; input logic lsu_disp_rs1_ready; input logic lsu_disp_rs2_ready; input logic [31:0] lsu_disp_imm; input logic lsu_disp_is_load; input logic lsu_disp_is_store; input logic [1:0] lsu_disp_mem_size; input logic alu_complete_valid; input logic [5:0] alu_complete_prd; output logic [5:0] lsu_prf_rs1_addr; output logic [5:0] lsu_prf_rs2_addr; input logic [31:0] lsu_prf_rdata1; input logic [31:0] lsu_prf_rdata2; input logic store_commit_valid; input logic [3:0] store_commit_rob_index; output logic store_done_valid; output logic [3:0] store_done_rob_index; output logic load_complete_valid; output logic",
+      "reuse": false
+    },
+    {
+      "name": "reorder_buffer",
+      "file": "rtl/reorder_buffer.sv",
+      "description": "8-entry circular ROB. Owns allocation index/head index, completion tracking from ALU/load, ECALL pending detection, store-at-head issue trigger and wait-for-write-through commit rule, single-instruction-in-order retirement, oldest-unresolved-control tracking and oldest-mispredict flush selection, and squashing younger ROB/IQ/LSU entries. It defers commits on a flush cycle to preserve older correct entries and never commits an ECALL before all older stores have completed.",
+      "interfaces": "input logic clk; input logic rst_n; input logic halted; input logic rob_alloc_valid; output logic rob_alloc_ready; output logic [3:0] rob_alloc_index; input logic [31:0] rob_alloc_pc; input logic [31:0] rob_alloc_insn; input logic [5:0] rob_alloc_pdst; input logic [5:0] rob_alloc_old_prd; input logic [4:0] rob_alloc_arch_rd; input logic rob_alloc_is_control; input logic rob_alloc_is_store; input logic rob_alloc_is_ecall; input logic rob_alloc_reg_write; output logic [3:0] rob_head_index; input logic alu_complete_valid; input logic [3:0] alu_complete_rob_index; input logic [31:0] alu_complete_data; input logic load_complete_valid; input logic [3:0] load_complete_rob_index; input logic [31:0] load_complete_data; input logic resolve_valid; input logic [3:0] resolve_rob_index; input logic resolve_mispredict; input logic [31:0] resolve_actual_next_pc; output logic store_commit_valid; output logic [3:0] store_commit_rob_index; input logic store_done_valid; input logic [3:0] store_done_rob_in",
+      "reuse": false
+    },
+    {
+      "name": "commit_unit",
+      "file": "rtl/commit_unit.sv",
+      "description": "Architectural commit/retirement and final status unit (the L3 replacement for base wb_stage status duties). Owns 32 architectural registers, committed debug read, one dbg_retire_valid pulse per ROB commit, x0 forcing, ECALL serialization status, halted/exit_code registers, and reset clearing architectural state. On an ECALL retire it pulses dbg_retire_valid while halted/exit_code remain 0, then waits for bus_idle and sets halted=1 plus exit_code=arch[10] on the following clock; after halted it f",
+      "interfaces": "input logic clk; input logic rst_n; input logic commit_valid; input logic [31:0] commit_pc; input logic [31:0] commit_insn; input logic [31:0] commit_value; input logic [4:0] commit_arch_rd; input logic commit_reg_write; input logic commit_is_ecall; input logic bus_idle; input logic [4:0] dbg_reg_addr; output logic halted; output logic [31:0] exit_code; output logic dbg_retire_valid; output logic [31:0] dbg_retire_pc; output logic [31:0] dbg_retire_insn; output logic [31:0] dbg_reg_data",
+      "reuse": false
+    }
+  ],
+  "notes": "Frozen contract: 6-bit physical-register tags (PR0=x0 permanently ready and zero; free list starts PR32..PR39, initial map PR1..PR31=x1..x31), 4-bit ROB/LSQ/checkpoint indexes (8 ROB entries, 8 checkpoints, 8 IQ entries, 2 LSQ entries), and 2-bit flush_epoch. Internal encodings to duplicate as localparams in each file (no package/include): pred_type 00=none,01=conditional,10=JAL,11=JALR; mem_size 00=byte,01=half,10=word; wb_sel 000=ALU,001=PC+4,010=load,011=LUI/imm,100=AUIPC/pc+imm; alu_op codes 0 ADD,1 SUB,2 SLL,3 SLT,4 SLTU,5 XOR,6 SRL,7 SRA,8 OR,9 AND,10 PASS_B/imm,11 BEQ,12 BNE,13 BLT,14 BGE,15 BLTU,16 BGEU,17 JAL,18 JALR,19 LUI,20 AUIPC. Timing responsibility split: reset is synchronous and local in every stateful module plus top global epoch/debug masking; structural hazards are expressed by rename_unit combining rob_alloc_ready/iq_disp_ready/lsu_disp_ready; register dependency and load-use-equivalent waits are owned by rename_unit ready bits, issue_queue wakeup and load_store_unit in-order memory wakeup (no separate hazard_unit); branch/ECALL redirect flush selection is owned by reorder_buffer, checkpoint restore/free-list repair by rename_unit, and younger IQ/LSU clearing by their own squash logic; ECALL pending/serialization is owned by reorder_buffer (no younger dispatch after ECALL allocated) and final halted/exit_code timing by commit_unit; store write-through waiting and store_done are owned by load_store_unit/dcache with ROB holding the store at head; I/D refill and bus-stable waiting are owned by icache/dcache. Commit_unit waits for top-computed bus_idle=icache.idle && dcache.idle before raising halted, so no accepted I/D request is still outstanding. flush_epoch wraps; caches/LSU use in-flight valid plus rob-index/request-epoch identity (not epoch equality alone) to discard only younger work. Top masks dbg_bp_resolve/dbg_bp_mispredict from execute_alu resolve events, dbg_ooo_issue from iq_disp_valid&&iq_disp_ready or lsu_disp_valid&&lsu_disp_ready, a"
+}

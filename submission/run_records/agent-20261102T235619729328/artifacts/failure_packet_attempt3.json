@@ -1,0 +1,59 @@
+{
+  "attempt": 3,
+  "category": "timeout",
+  "root_cause": "唯一失败的是 synthesis_gate：yosys read_verilog 超过 150s 上限，原因是某个 always 块通过移动/可变索引写展开数组（arr[ptr]=x 后 ptr=ptr+1，即逐项压缩或 refill），使前端生成指数级的 mux/复制网络。此前两轮补丁都只改 rtl/rename_unit.sv，失败模式却没有变化，因此按 repair-state 指引，剩余缺陷应在其他队列/数组密集模块中：issue queue 压缩、store/load 队列项数组、ROB 项数组或 cache 行/refill 数组。修复必须是不改变周期行为的结构重写，不得改动端口/模块/文件。",
+  "failing_checks": [
+    "synthesis_gate"
+  ],
+  "involved_files": [
+    "rtl/issue_queue.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/dcache.sv",
+    "rtl/icache.sv",
+    "rtl/rename_unit.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "端口、模块和文件名称冻结：计划契约中列出的每个接口 (rv32i5, icache, dcache, branch_predictor, if_stage, id_stage, rename_unit, physical_register_file, issue_queue, execute_alu, load_store_unit, reorder_buffer, commit_unit) 必须保持完全相同的端口名称、位宽和方向；不得重命名文件。",
+    "仅做保持行为的重构，教师 TB 当前 PASS 且 trace_mismatches 为空，因此补丁后所有仿真检查、retire/halt/exit_code 定时、CPI、分支解析计数和 OoO 事件语义必须逐拍一致。",
+    "将写入展开（unpacked / 2-D）数组的可变索引写替换为常量索引写（行/路译码：for (r...) if (sel == r) arr[r][i] = ...），或在安全处使用位向量 one-hot 掩码；可变索引读只要保持为 mux 可保留。",
+    "不得新增锁存器或推断状态：每个 always_comb 必须在所有路径上给所有输出赋值（之前一轮在 free_list_nxt 上触发了与锁存器相关的 yosys 诊断）。",
+    "不要重复已被证伪的 rename_unit 检查点/空闲列表修复；保留已落地的 FIFO->bitmap 空闲列表重构不动（只审计 rename_unit 中残留的可变索引 2-D 写）。",
+    "在重写任何数组时，保持同步低有效复位、单时钟和现有写优先级/读写同拍语义（压缩顺序、refill 覆盖、store 合并、请求保持至 ready）。"
+  ],
+  "evidence": "简报：\"stage\": \"simulation\"，\"summary\": \"Teacher TB failed (Simulation); failed checks: synthesis_gate.\"，\"trace_mismatches\": []，\"compile_error_tail\": []（仿真通过，只有综合门失败）。检查细节：\"yosys 综合超时（150s）：RTL 含使前端/proc 指数展开的结构。典型元凶：always 块内对展开数组的链式可变索引写（arr[ptr] = x 后 ptr = ptr + 1 逐项推进）。请重构为固定索引/位向量写法，保持 TB 行为不变。\" 此前尝试 1 和 2 都 patch 了 rtl/rename_unit.sv（先是 ckpt_map_nxt 可变行写，其次是 free_list_nxt），但当前失败的检查完全相同，因此剩余的嫌疑落在其他数组/队列模块上。",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The only failing check is synthesis_gate, and the yosys diagnostic names rename_unit's spec_map_nxt signal. The synthesis failure is caused by the checkpoint-save write into the 2D unpacked checkpoint map using a variable row index (ckpt_map_nxt[alloc_slot][i] = spec_map_nxt[i]), which is not synthesizable/elaborable by yosys. Rewrite that save with row-decoded constant-index writes and audit rena",
+      "patched_files": [
+        "rtl/rename_unit.sv"
+      ]
+    },
+    {
+      "attempt": 2,
+      "root_cause": "The only failing check is the yosys synthesis gate, and the diagnostic names rename_unit's own process (`\\rename_unit.$proc$...`) and the signal `\\rename_unit.\\free_list_nxt`. The previous variable-row-index checkpoint write (`ckpt_map_nxt[alloc_slot][i]`) is no longer what kills the frontend, but rename_unit's combinational free-list/checkpoint next-state block still trips a latch-related yosys d",
+      "patched_files": [
+        "rtl/rename_unit.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: synthesis_gate.",
+    "failed_checks": [
+      {
+        "name": "synthesis_gate",
+        "detail": "yosys 综合超时（150s）：RTL 含使前端/proc 指数展开的结构。典型元凶：always 块内对展开数组的链式可变索引写（arr[ptr] = x 后 ptr = ptr + 1 逐项推进）。请重构为固定索引/位向量写法，保持 TB 行为不变。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

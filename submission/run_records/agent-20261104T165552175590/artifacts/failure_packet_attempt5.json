@@ -1,0 +1,68 @@
+{
+  "attempt": 5,
+  "category": "compile",
+  "root_cause": "The currently actionable failure is a synthesis/frontend hang in rtl/rename_unit.sv, not a simulation behavior bug: the checkpoint-save allocation loop writes a row of the 2D unpacked checkpoint array with a variable row index (`ckpt_map_nxt[alloc_slot][i] = spec_map_nxt[i]`), which makes yosys read_verilog explode. Bisection shows removing just those writes drops yosys from >15 s to 1.1 s. The functional TB currently passes, and the FIFO->bitmap free-list refactor is already correct; row-decode every such write into constant-index rows and audit all other unpacked-array writes in the same file.",
+  "failing_checks": [
+    "synthesis_gate"
+  ],
+  "involved_files": [
+    "rtl/rename_unit.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Never rename ports, modules, or files; keep the rv32i5/rename_unit interface contract unchanged.",
+    "Preserve all currently passing TB behavior; the synthesis fix must be behavior-preserving and must not change cycle-level functional behavior.",
+    "Do not modify or revert the already-correct FIFO->bitmap free-list refactor.",
+    "Rewrite every variable-row-index write into a 2D unpacked array as a constant-index row-decoded write; audit ckpt_map_nxt and any other 2D unpacked arrays in rename_unit.sv.",
+    "Bit-vector arrays such as slot_* and free_vec_nxt are not subject to this restriction, but their semantics must remain unchanged.",
+    "After the patch, yosys read_verilog must complete without hanging while all existing functional tests remain passing."
+  ],
+  "evidence": "Repair state: 'yosys read_verilog hangs on rtl/rename_unit.sv'; bisection proved the checkpoint-save loop writes `ckpt_map_nxt[alloc_slot][i] = spec_map_nxt[i]` with a variable row index; removing just these 3 lines drops yosys from >15s hang to 1.1s. Also: 'TB PASSES; one synthesizability defect remains' and 'FIFO->bitmap refactor already landed and is correct; do not touch it.' The teacher brief's bench_ooo_overlap64 is not the active blocker in this current RTL state.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The OoO overlap benchmark never observes a younger independent ALU instruction issuing/completing while an older load is waiting on external memory. The primary suspect is the issue-queue selection/wakeup path serializing ALU issue behind an outstanding load (or gating ALU issue on load completion), with a secondary suspect in the top-level completion/debug wiring: alu_complete_valid/rob_index mus",
+      "patched_files": [
+        "rtl/load_store_unit.sv",
+        "rtl/rv32i5.sv"
+      ]
+    },
+    {
+      "attempt": 2,
+      "root_cause": "Only the OoO-overlap observation fails while the program still retires correctly (no trace mismatches, no timeout, no other failing checks), so the design is functionally right but never exhibits/propagates the required 'younger independent ALU issues and completes while an older load waits on external memory' event. The two candidate mechanisms, in order, are: (1) the issue/wakeup path in issue_q",
+      "patched_files": [
+        "rtl/rv32i5.sv"
+      ]
+    },
+    {
+      "attempt": 3,
+      "root_cause": "The OoO-overlap failure is in the issue/control path rather than in commit or data forwarding: the issue queue/dispatch logic still serializes functional-unit issue, so while an older load is outstanding/waiting on external memory, no younger independent ALU instruction is accepted by execute_alu and dbg_ooo_bypass never fires. The power overrun is an implementation/power issue: large queue/ROB/re",
+      "patched_files": [
+        "rtl/execute_alu.sv",
+        "rtl/issue_queue.sv",
+        "rtl/rv32i5.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: bench_ooo_overlap64.",
+    "failed_checks": [
+      {
+        "name": "bench_ooo_overlap64",
+        "detail": "OoO benchmark saw no bypass/overlap while the load was waiting"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [
+      "performance_correctness"
+    ],
+    "compile_error_tail": [],
+    "hints": [
+      "OOO-BYPASS: 乱序旁路要求存在更老未完成 load 等待外存时，独立的更年轻 ALU 指令仍从发射队列被功能单元接受并完成（dbg_ooo_issue/ooo_bypass 来自真实内部状态）。检查：①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）。"
+    ],
+    "return_code": 1
+  }
+}

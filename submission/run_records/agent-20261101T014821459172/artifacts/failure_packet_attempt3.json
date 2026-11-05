@@ -1,0 +1,54 @@
+{
+  "attempt": 3,
+  "category": "timeout",
+  "root_cause": "Only simulation_timeout is reported, with empty trace_mismatches, no failing suites and no compile tail, so this is a global liveness deadlock (no instruction ever retires, or the ECALL never reaches WB/commit), not a wrong-data bug. Because two earlier rounds already reworked the top-level integration and the rename/ROB/issue backpressure path and the freeze pattern did not change, the defect most likely lies in the request/response protocol between modules that has not been touched: a fetch/load-store transaction that is never completed or acknowledged (valid not held until ready, a refill that never returns, or an in-flight response silently dropped by an epoch gate without re-issuing), which stalls the whole pipeline at the first memory access. It should be diagnosed as a structural stall (mem/handshake stuck) first, and only as an ECALL/halt-commit problem if the trace shows retire PCs marching past the program image, which the empty trace_mismatches do not support.",
+  "failing_checks": [
+    "simulation_timeout"
+  ],
+  "involved_files": [
+    "rtl/icache.sv",
+    "rtl/if_stage.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/dcache.sv",
+    "rtl/issue_queue.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "No port, module, or file may be renamed; every port list and width must stay exactly as in the interface contract (rv32i5, icache, dcache, branch_predictor, if_stage, id_stage, rename_unit, physical_register_file, issue_queue, execute_alu, load_store_unit, reorder_buffer, commit_unit).",
+    "External handshake: at most one in-flight request per interface; once imem_valid/dmem_valid is asserted it and its addr/wdata/be must be held until the corresponding ready, and an in-flight request must never be aborted by flush or halt (halt/flush may only suppress the response via the epoch gate); imem_addr[1:0] must be 00 on every running cycle.",
+    "Reset stays synchronous active-low, effective only on the rising clk edge, with dmem_valid=0 during reset.",
+    "Halt timing must be preserved unchanged: ECALL travels ID->EX->MEM->WB without being dropped during stalls; one dbg_retire_valid pulse of one cycle is produced on the ECALL commit edge with halted/exit_code still 0; halted=1 and exit_code=x10 appear on the following clock edge; no cycle may show halted=0 with exit_code!=0; after halted=1 all outputs and architectural state stay stable.",
+    "Exactly one single-cycle dbg_retire_valid per truly committed instruction (including load/store/branch/NOP/rd=x0/ECALL), at most one per cycle, no double counting during stalls, no event for squashed or invalid entries.",
+    "Steady-state CPI=1 for straight-line ALU code, a load-use stall of exactly one cycle, and at most 2 bubbles on a taken control transfer; no extra stalls besides load-use and redirect flush.",
+    "dbg_bp_resolve/dbg_bp_mispredict/dbg_ooo_issue/dbg_ooo_bypass must be derived from real internal state, never synthesized from counters or PC patterns.",
+    "No pipeline register may be written without backpressure (fetch response into IF/ID only when IF/ID is empty or draining), and queue/free-list head/tail/count must stay consistent so no instruction is silently lost or duplicated."
+  ],
+  "evidence": "summary: \"Teacher TB failed (Simulation); failed checks: simulation_timeout.\"; detail: \"教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。\"; \"trace_mismatches\": [], \"failing_suites\": [], \"compile_error_tail\": [], \"return_code\": null; prior rounds: attempt 1 = top-level compile break in rtl/rv32i5.sv, attempt 2 = \"global liveness/deadlock ... undriven or misconnected ready/stop-fetch/commit-metadata net in the rv32i5 top-level integration, or an equivalent rename/ROB/issue backpressure loop\" — failure mode unchanged.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The failure is a compile/elaboration break in the generated top level, rtl/rv32i5.sv, not a datapath logic bug. The file does not parse: syntax errors at lines 3221–3274 ('Invalid module instantiation', 'Invalid module item'), plus a duplicate loop variable ('i' already declared at 3312, first declared at 3077). Because the instantiation block is malformed, the three instances u_rob (reorder_buffe"
+    },
+    {
+      "attempt": 2,
+      "root_cause": "Only simulation_timeout is reported, with empty trace_mismatches and no compile tail, so this is a global liveness/deadlock rather than a wrong-data failure. The most likely cause is an undriven or misconnected ready/stop-fetch/commit-metadata net in the rv32i5 top-level integration, or an equivalent rename/ROB/issue backpressure loop: fetch or dispatch stops permanently and no ECALL reaches commi"
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: simulation_timeout.",
+    "failed_checks": [
+      {
+        "name": "simulation_timeout",
+        "detail": "教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": null
+  }
+}

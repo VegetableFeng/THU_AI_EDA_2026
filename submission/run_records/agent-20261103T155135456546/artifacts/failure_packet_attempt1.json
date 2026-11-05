@@ -1,0 +1,50 @@
+{
+  "attempt": 1,
+  "category": "simulation",
+  "root_cause": "该设计逻辑/仿真结果没有 trace mismatch，但两项 PPA 预算均超标：功耗 0.0763 W > 0.06 W，面积 350943 > 300000 library units。超预算的根因是结构实现层面的冗余与无效翻转：checkpoint/表项/宽寄存器数组过冗余且每拍无条件重写、缺少写使能或操作数隔离；cache 行数偏多；部分队列表项保留了无消费者的宽字段。需要进行行为等价重构，而不是修正功能数据通路。",
+  "failing_checks": [
+    "ppa_power_budget",
+    "ppa_area_budget"
+  ],
+  "involved_files": [
+    "rtl/rename_unit.sv",
+    "rtl/issue_queue.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/dcache.sv",
+    "rtl/icache.sv",
+    "rtl/execute_alu.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "不得改名或删除任何模块、端口或文件；保持 rv32i5 及所有子模块的接口名、位宽和方向不变。",
+    "所有 PPA 改动必须是行为等价重构，教师 TB 必须保持 PASS；不得改变指令退休、ECALL 停机、debug 事件和架构状态语义。",
+    "加写使能/操作数隔离只能抑制无效翻转，不得改变同拍读写、复位值、前递结果或流水线控制。",
+    "减少 checkpoint/队列表项或 cache 行数时，必须保持索引、标签、epoch、refill、miss 处理、store 合并及外部 ready/valid 协议正确。",
+    "保持复位优先级、ECALL 提交与停机时序、每提交指令恰好一拍 dbg_retire_valid、load-use 恰好 1 拍暂停。",
+    "不得用计数器或 PC 模式伪造 dbg_bp_resolve/dbg_bp_mispredict/dbg_ooo_issue/dbg_ooo_bypass。",
+    "修复后功耗需低于 0.06 W，面积需低于 300000 library units。"
+  ],
+  "evidence": "失败简报：\"总功耗 0.0763 W 超预算 0.06 W。按缺陷清单做等价重构：大向量每拍无条件重写加写使能、ALU 操作数隔离；TB 必须保持 PASS。\"；\"面积 350943 超预算 300000（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。\"；trace_mismatches 为空。",
+  "previous_hypotheses": [],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_power_budget, ppa_area_budget.",
+    "failed_checks": [
+      {
+        "name": "ppa_power_budget",
+        "detail": "总功耗 0.0763 W 超预算 0.06 W。按缺陷清单做等价重构：大向量每拍无条件重写加写使能、ALU 操作数隔离；TB 必须保持 PASS。"
+      },
+      {
+        "name": "ppa_area_budget",
+        "detail": "面积 350943 超预算 300000（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。"
+      }
+    ],
+    "total_failed_checks": 2,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

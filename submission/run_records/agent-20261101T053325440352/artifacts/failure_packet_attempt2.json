@@ -1,0 +1,55 @@
+{
+  "attempt": 2,
+  "category": "timeout",
+  "root_cause": "The only failing check is the global 60 s simulation watchdog, with empty trace_mismatches, empty compile_error_tail and empty failing_suites, so this is a liveness/handshake deadlock, not a wrong-data result: the core stops making forward progress and either never retires the blocking instruction or never reaches the ECALL halt. Since rename_unit/reorder_buffer/rv32i5 were already patched with no change in symptom, the stall most likely lies in the never-audited completion/handshake chain: the LSU -> dcache load/store path where the ROB head waits forever for load_complete/store_done (or dcache retracts mem_req_valid/addr before ready, or drops a refill response through the flush-epoch gate), the icache/if_stage refill path where a response is discarded without re-arming the fetch request, or the issue queue never setting/keeping the operand-ready bits (dead wire or last-NBA-wins on a ready vector) so nothing ever issues. The Patch must first verify hold-until-ready and response-epoch handling in the caches, then the LSU completion signals and issue-queue wakeup/ready logic.",
+  "failing_checks": [
+    "simulation_timeout"
+  ],
+  "involved_files": [
+    "rtl/load_store_unit.sv",
+    "rtl/dcache.sv",
+    "rtl/icache.sv",
+    "rtl/issue_queue.sv",
+    "rtl/execute_alu.sv",
+    "rtl/if_stage.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Never rename or re-port modules, files or ports: keep every port name/width in the plan contract for rv32i5, icache, dcache, if_stage, id_stage, rename_unit, issue_queue, execute_alu, load_store_unit, reorder_buffer, commit_unit, physical_register_file, branch_predictor exactly as specified.",
+    "Preserve the external handshake contract: at most one outstanding imem/dmem request; once mem_req_valid is asserted, valid/addr/wdata/be must be held until mem_req_ready; never gate or retract an issued request with flush/halted; halt/flush may only suppress the response via the epoch gate, and the external address must stay constant after halt.",
+    "Preserve epoch semantics: a response whose cpu_resp_epoch != flush_epoch must be discarded AND the request re-issued (req_pending re-armed); never abort an in-flight transaction and never wait forever on a discarded response.",
+    "Preserve retire/halt semantics: exactly one single-cycle dbg_retire_valid per truly committed instruction, in order, at most one per cycle, no double count on stalls, no event for squashed/invalid entries; halted/exit_code set one cycle after the ECALL commit (exit_code = x10) and stable thereafter; never halted=0 with exit_code!=0.",
+    "Every module output port must be driven on all paths and connected at instantiation; treat internal nets referenced <=2 times and near-duplicate names as suspect (dead-wire/X-propagation check), and avoid multiple NBAs to the same vector in one always block.",
+    "Do not repeat the already-falsified rename_unit/reorder_buffer/rv32i5 hypothesis; re-touch those files only if a concrete new defect is proven, otherwise leave them at the current baseline.",
+    "All dbg_* events (retire, bp_resolve/mispredict, ooo_issue/ooo_bypass) must be derived from real internal state, never counters or PC patterns."
+  ],
+  "evidence": "summary: \"Teacher TB failed (Simulation); failed checks: simulation_timeout.\"; detail: \"教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。\"; trace_mismatches: []; compile_error_tail: []; failing_suites: []; total_failed_checks: 1",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The run produced only the simulation watchdog timeout, with no trace mismatches and no compile errors, so this is a liveness failure rather than a wrong-data result. The core either never reaches the ECALL/halt commit point or a structural stall/handshake never completes. The first candidate is a dead or undriven control wire at top-level integration (halted/exit_code, stop-fetch/ecall_pending, or",
+      "patched_files": [
+        "rtl/rename_unit.sv",
+        "rtl/reorder_buffer.sv",
+        "rtl/rv32i5.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: simulation_timeout.",
+    "failed_checks": [
+      {
+        "name": "simulation_timeout",
+        "detail": "教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": null
+  }
+}

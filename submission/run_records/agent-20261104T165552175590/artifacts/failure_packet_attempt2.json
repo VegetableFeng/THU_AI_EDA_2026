@@ -1,0 +1,54 @@
+{
+  "attempt": 2,
+  "category": "simulation",
+  "root_cause": "Only the OoO-overlap observation fails while the program still retires correctly (no trace mismatches, no timeout, no other failing checks), so the design is functionally right but never exhibits/propagates the required 'younger independent ALU issues and completes while an older load waits on external memory' event. The two candidate mechanisms, in order, are: (1) the issue/wakeup path in issue_queue never schedules the younger ALU in parallel with the outstanding load (in-order single-issue selection, or issue/disp gated on LSU busy / on load_complete), and (2) the completion side-band that forms dbg_ooo_bypass (alu_complete_valid/alu_complete_rob_index into ROB/IQ, and the outstanding-load flag used to qualify the pulse) is not actually driven/connected, so even a real overlap produces no event. Previous patching of load_store_unit and the top level did not change the symptom, so the defect is most likely in the issue/completion control outside those two files, not in the memory data path.",
+  "failing_checks": [
+    "bench_ooo_overlap64"
+  ],
+  "involved_files": [
+    "rtl/issue_queue.sv",
+    "rtl/rv32i5.sv",
+    "rtl/execute_alu.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/load_store_unit.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename any port, module, or file; keep every interface exactly as in the plan contract (rv32i5 top-level, issue_queue, execute_alu, reorder_buffer, load_store_unit, physical_register_file).",
+    "dbg_ooo_issue must remain the cycle an IQ-resident valid instruction is truly accepted by a functional unit; dbg_ooo_bypass must mark a real event where, with an older unfinished load outstanding, a younger independent integer ALU instruction is issued and completes (per real internal state, at most one event per cycle, no counters or PC-pattern fakes).",
+    "Do not weaken correctness to create the event: the ALU must not be allowed to bypass a true register/data dependency on the in-flight load, and memory ordering/store semantics must be preserved.",
+    "All currently passing checks must stay passing: retire pulse/PC/insn per committed instruction, branch-predictor resolve/mispredict events, cache miss/refill and epoch handling, halt/exit_code timing (halted and exit_code appear on the same cycle after the ECALL commit, outputs frozen afterwards).",
+    "Any touch of rename_unit.sv (outstanding constant-index rewrite of the checkpoint-save row write) must be behavior-preserving and must keep the teacher TB passing."
+  ],
+  "evidence": "\"stage\": \"simulation\"; \"failed_checks\": [{\"name\": \"bench_ooo_overlap64\", \"detail\": \"OoO benchmark saw no bypass/overlap while the load was waiting\"}]; \"total_failed_checks\": 1; \"trace_mismatches\": []; failing suite: performance_correctness. Hint: \"检查：①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）\".",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The OoO overlap benchmark never observes a younger independent ALU instruction issuing/completing while an older load is waiting on external memory. The primary suspect is the issue-queue selection/wakeup path serializing ALU issue behind an outstanding load (or gating ALU issue on load completion), with a secondary suspect in the top-level completion/debug wiring: alu_complete_valid/rob_index mus",
+      "patched_files": [
+        "rtl/load_store_unit.sv",
+        "rtl/rv32i5.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: bench_ooo_overlap64.",
+    "failed_checks": [
+      {
+        "name": "bench_ooo_overlap64",
+        "detail": "OoO benchmark saw no bypass/overlap while the load was waiting"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [
+      "performance_correctness"
+    ],
+    "compile_error_tail": [],
+    "hints": [
+      "OOO-BYPASS: 乱序旁路要求存在更老未完成 load 等待外存时，独立的更年轻 ALU 指令仍从发射队列被功能单元接受并完成（dbg_ooo_issue/ooo_bypass 来自真实内部状态）。检查：①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）。"
+    ],
+    "return_code": 1
+  }
+}

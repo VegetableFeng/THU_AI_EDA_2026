@@ -1,0 +1,44 @@
+{
+  "attempt": 1,
+  "category": "simulation",
+  "root_cause": "The only failing check is the PPA area gate: synthesized area 215237 exceeds the 190000-library-unit budget by ~13%. There is no data/control, protocol, or timing mismatch (trace_mismatches empty, failing_suites empty, return_code 0) — the design is functionally correct and the repair is an equivalence-preserving area reduction. The three named hotspots are redundant checkpoint/table storage (rename_unit's 16x32 checkpoint-map copies plus speculative/architectural map and free-list bookkeeping), oversized cache line/entry counts (icache, dcache), and wide pipeline/queue fields that are carried but never consumed (issue_queue, load_store_unit, reorder_buffer, top-level wiring).",
+  "failing_checks": [
+    "ppa_area_budget"
+  ],
+  "involved_files": [
+    "rtl/rename_unit.sv",
+    "rtl/dcache.sv",
+    "rtl/icache.sv",
+    "rtl/issue_queue.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Binding interface contract: do NOT rename any port, module or file — rv32i5, icache, dcache, branch_predictor, if_stage, id_stage, rename_unit, physical_register_file, issue_queue, execute_alu, load_store_unit, reorder_buffer, commit_unit keep their exact names and port lists.",
+    "TB must remain PASS: every refactor must be behavior-equivalent — same retire events, halt/exit_code timing, handshake behavior and cache refill behavior.",
+    "Reduce area only through structural equivalence: de-duplicate checkpoint/table storage in rename_unit (share/compress ckpt_map instead of full per-slot redundancy), shrink cache line/entry counts in icache/dcache to the minimum the TB exercises, and delete wide fields that no consumer reads from queues/pipeline registers.",
+    "Preserve the already-landed fixes: rename_unit's FIFO->bitmap free-list refactor stays, and all writes into the 2D checkpoint array must stay constant-index (row-decoded) so yosys read_verilog does not hang.",
+    "Any narrowing of cache capacity or queue depth must keep the miss/refill contract (request held, addr constant, no abort of in-flight transactions) and the IF response epoch guard intact.",
+    "Keep all debug outputs (dbg_retire_valid/pc/insn, dbg_bp_resolve/mispredict, dbg_ooo_issue/bypass, dbg_features, dbg_reg_data) driven and architecturally correct — do not 'save area' by removing observable debug behavior."
+  ],
+  "evidence": "\"stage\": \"simulation\"; failed_checks: ppa_area_budget — \"面积 215237 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。\"; total_failed_checks: 1; trace_mismatches: []; failing_suites: []; return_code: 0.",
+  "previous_hypotheses": [],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_area_budget.",
+    "failed_checks": [
+      {
+        "name": "ppa_area_budget",
+        "detail": "面积 215237 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

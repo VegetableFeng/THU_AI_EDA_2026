@@ -1,0 +1,57 @@
+{
+  "attempt": 2,
+  "category": "simulation",
+  "root_cause": "The only failing check is the OoO evidence check ooo_load_overlap_rename ('missing issue evidence'): dbg_ooo_issue never asserts. Because the program still retires correctly (trace_mismatches empty, only 1 failed check, other suites pass), the data path is not the problem — the issue evidence is. Either the IQ→FU issue-accept event never drives dbg_ooo_issue (the pulse is conditioned on a rare bypass-only case, generated from dispatch/rename instead of accept, qualified by a same-cycle flag or a dead/near-duplicate top-level wire), or the issue queue never issues out of order (it issues only the ROB-head entry or blocks all issue behind an older outstanding load), so a younger independent ALU instruction is never accepted by a functional unit while the load is in flight. The fix must derive dbg_ooo_issue from the real IQ→FU accept handshake (iq_accept && !is_ecall || lsq_accept, one pulse per instruction) and make issue selection scan all valid entries for readiness.",
+  "failing_checks": [
+    "ooo_load_overlap_rename (missing issue evidence)"
+  ],
+  "involved_files": [
+    "rtl/issue_queue.sv",
+    "rtl/rv32i5.sv",
+    "rtl/execute_alu.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/rename_unit.sv",
+    "rtl/reorder_buffer.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Port, module and file names are binding-frozen: rv32i5, icache, dcache, branch_predictor, if_stage, id_stage, rename_unit, physical_register_file, issue_queue, execute_alu, load_store_unit, reorder_buffer, commit_unit and every port listed in the plan contract must keep their exact names/widths/directions.",
+    "dbg_ooo_issue must be produced from real internal state: one single-cycle pulse on the cycle a valid issue-queue entry is actually accepted by a functional unit (iq_accept && !is_ecall || lsq_accept); it must not be fabricated from counters or PC patterns, must not be tied to dispatch/rename events, and must not be qualified by a flag set in the same cycle by an NBA.",
+    "dbg_ooo_bypass must stay tied to real internal state (an older incomplete load exists while a younger independent integer ALU instruction is issued and completes).",
+    "Issue selection must be truly out-of-order: a younger instruction whose source PRs are ready must issue without waiting for any older load or for the ROB head; dispatch (rename→IQ, in-order enqueue) and issue (IQ→FU, out-of-order dequeue) must stay separated, and iq_disp_ready must remain asserted while an older load is outstanding so rename can overlap.",
+    "Preserve the previously verified fixes/behaviour: LSU operand-ready wakeup (lsu_cpu_req_valid) fix, t06b/t08 load/store lanes, t07 load-use timing, halt/ECALL sequencing (halted and exit_code appear together one cycle after the ECALL commit edge; no cycle with halted=0 and exit_code!=0; frozen state after halt), retire rules (exactly one single-cycle dbg_retire_valid per committed instruction, non",
+    "Do not gate an issued external request with !halted/flush; halt/flush may only suppress the response path (epoch gate) and must leave the external address constant after halt."
+  ],
+  "evidence": "summary: 'Teacher TB failed (Simulation); failed checks: ooo_load_overlap_rename'; failed_checks[0].detail: 'missing issue evidence'; total_failed_checks: 1; 'trace_mismatches': []; hint: 'ISSUE-EVIDENCE: dbg_ooo_issue 从未断言 = 整数发射队列不存在或从未乱序发射'; hint: 'dbg_ooo_issue 在指令被发射队列接受的拍产生单拍脉冲'; reference pattern H: 'dbg_ooo_issue = iq_accept && !is_ecall || lsq_accept (once per instruction)'.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The dominant data-path defect is in the sub-word load result path: byte/half loads are always sign-extended, so LBU/LHU return 0xFFFFFFxx / 0xFFFFxxxx instead of zero-extended values; this exactly explains all six t06 mismatches and corrupts the CRC benchmark's x3/exit_code (the changed data-dependent flow can also alter its retired-instruction count). Separately, the OoO path never asserts dbg_oo",
+      "patched_files": [
+        "rtl/issue_queue.sv",
+        "rtl/load_store_unit.sv",
+        "rtl/rv32i5.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ooo_load_overlap_rename.",
+    "failed_checks": [
+      {
+        "name": "ooo_load_overlap_rename",
+        "detail": "missing issue evidence"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [
+      "ooo"
+    ],
+    "compile_error_tail": [],
+    "hints": [
+      "ISSUE-EVIDENCE: dbg_ooo_issue 从未断言 = 整数发射队列不存在或从未乱序发射。对照 spec D.1/D.5 检查：是否存在独立 issue_queue 模块；分派（rename→IQ 顺序入队）与发射（IQ 乱序出队）是否分离；ALU 指令源 PR ready 即发射，不等待任何更老 load；dbg_ooo_issue 在指令被发射队列接受的拍产生单拍脉冲。若当前实现是顺序单发射（EX 只有一条固定通路），需要按 spec D.4 重构为 issue_queue + 独立 ALU/LSU 通路。"
+    ],
+    "return_code": 1
+  }
+}

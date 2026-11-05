@@ -1,0 +1,77 @@
+{
+  "project_name": "rv32i5_pipeline_l1_cache",
+  "top_module": "rv32i5",
+  "modules": [
+    {
+      "name": "rv32i5",
+      "file": "rtl/rv32i5.sv",
+      "description": "顶层：例化五级流水线、hazard_unit、forwarding_unit、icache、dcache，只做连线。额外持有一个 2 位 flush_epoch 寄存器（同步复位为 0，在 redirect 或 ecall_hit 的上升沿加 1），并把它送给 icache/dcache/if_stage。输出级用 rst_n 组合屏蔽：imem_valid = ic_mem_req_valid & rst_n，dmem_valid = dc_mem_req_valid & rst_n；imem_addr/imem_rdata/imem_ready 接 icache 外部端口，dmem_* 接 dcache 外部端口；icache/dcache 的 mem_resp_valid 由顶层驱动为对应 mem_req_ready（外部总线的读数据在 valid&&ready 的接受沿有效）。L1 常量 dbg_features=3'b001，dbg_bp_resolve/dbg_bp_mispredict/dbg_ooo_issue/dbg_ooo_bypass 全部恒接 0。",
+      "interfaces": "input logic clk; input logic rst_n; output logic [31:0] imem_addr; input logic [31:0] imem_rdata; output logic imem_valid; input logic imem_ready; output logic dmem_valid; output logic dmem_we; output logic [31:0] dmem_addr; output logic [31:0] dmem_wdata; output logic [3:0] dmem_be; input logic [31:0] dmem_rdata; input logic dmem_ready; input logic [4:0] dbg_reg_addr; output logic [31:0] dbg_reg_data; output logic halted; output logic [31:0] exit_code; output logic [2:0] dbg_features; output logic dbg_retire_valid; output logic [31:0] dbg_retire_pc; output logic [31:0] dbg_retire_insn; output logic dbg_bp_resolve; output logic dbg_bp_mispredict; output logic dbg_ooo_issue; output logic dbg_ooo_bypass",
+      "reuse": false
+    },
+    {
+      "name": "if_stage",
+      "file": "rtl/if_stage.sv",
+      "description": "IF 级（重写）：持有 PC 与 IF/ID 流水寄存器的时序状态；驱动 icache 的 CPU 侧请求。采用流水化的取指：在每个周期发一次请求的条件是 !pend，或者 (ic_resp_valid=1)，因此命中时每拍交付一条指令（稳态 CPI=1）。该级内部寄存器：pc（取指地址）、pend（有一个已被接受的请求在途）、inflight_pc（在途请求地址）、inflight_epoch。时序职责：(1) flush=1 时清 IF/ID 的 valid、清 pend；redirect=1 时同时把 pc 置为 redirect_pc，否则 pc 保持；(2) stall=1（来自 hazard_unit 的 pc_stall：load-use / ECALL halt-pending / halted / mem_stall）时冻结 pc 与 IF/ID，也不再发新请求；(3) flush_epoch 与 inflight_epoch 不相等时无条件清 pend（丢弃错误路径响应，ICache 也会丢弃同 epoch 的响应）；(4) 每拍到 IF/ID 写入 valid=0",
+      "interfaces": "input logic clk; input logic rst_n; input logic stall; input logic flush; input logic redirect; input logic [31:0] redirect_pc; input logic [1:0] flush_epoch; output logic ic_req_valid; output logic [31:0] ic_req_addr; input logic ic_req_ready; input logic ic_resp_valid; input logic [31:0] ic_resp_data; output logic ifid_valid; output logic [31:0] ifid_pc; output logic [31:0] ifid_pc_plus4; output logic [31:0] ifid_instr",
+      "reuse": false
+    },
+    {
+      "name": "icache",
+      "file": "rtl/icache.sv",
+      "description": "I-Cache（新增）：256 B、直接映射、16 B line、16 line、每线 4×32 bit word；索引 addr[7:4]，行内字选择 addr[3:2]，tag addr[31:8]。命中响应延迟固定为 1 拍（接受沿的下一拍给出单周期 cpu_resp_valid + cpu_resp_data），因此 cpu_req_ready 在空闲或命中路径上每拍可为 1，支持 IF 每拍一条指令。miss 时拉低 cpu_req_ready、按 line base/base+4/base+8/base+12 顺序发起 4 次外部 refill（mem_req_valid/mem_req_addr，mem_req_ready 为接受沿，mem_resp_valid 同拍表示 mem_resp_data 有效），4 个字全部安装后才置 valid；未完成的行 lookup 一律按 miss 处理；直接映射冲突整行替换。时序职责：同步复位清空全部 valid、请求状态与 refill 状态；flush/flush_epoch 只清除尚未被外部接受的请求和 refill 剩余字（",
+      "interfaces": "input logic clk; input logic rst_n; input logic cpu_req_valid; input logic [31:0] cpu_req_addr; output logic cpu_req_ready; output logic cpu_resp_valid; output logic [31:0] cpu_resp_data; input logic flush; input logic [1:0] flush_epoch; output logic mem_req_valid; output logic [31:0] mem_req_addr; input logic mem_req_ready; input logic mem_resp_valid; input logic [31:0] mem_resp_data",
+      "reuse": false
+    },
+    {
+      "name": "id_stage",
+      "file": "rtl/id_stage.sv",
+      "description": "ID 级（重写，在旧版基础上增加 idex_instr 与 ecall_hit 输出）：内含 32×32 架构寄存器堆（x0 恒 0、WB→ID 读旁路写优先）、立即数生成、控制译码、ECALL 识别与 ecall_pending 寄存器、dbg 组合读口，并拥有 ID/EX 流水寄存器（idex_*）。时序职责：(1) ECALL 命中时产生单周期 ecall_hit 脉冲（供顶层 flush_epoch 递增），并在 ecall_pending 寄存器中置位直到复位，同时把该 ECALL 正常锁进 ID/EX（idex_valid=1, idex_ecall=1）；(2) redirect=1 时不置 ecall_hit/ecall_pending（更老的控制转移冲刷 ECALL）；(3) flush=1（redirect / load-use / mem_stall）只清 idex_valid，数据字段为 don't-care；halted 时由 hazard_unit 冻结前端，寄存器堆自然保持；(4) rst_n 同步清零寄存器堆与 ecall_pending。reg_x10",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic redirect; input logic ifid_valid; input logic [31:0] ifid_pc; input logic [31:0] ifid_pc_plus4; input logic [31:0] ifid_instr; input logic wb_we; input logic [4:0] wb_rd; input logic [31:0] wb_data; input logic [4:0] dbg_reg_addr; output logic [31:0] dbg_reg_data; output logic [31:0] reg_x10; output logic ecall_pending; output logic ecall_hit; output logic idex_valid; output logic [31:0] idex_pc; output logic [31:0] idex_pc_plus4; output logic [31:0] idex_instr; output logic [4:0] idex_rs1; output logic [4:0] idex_rs2; output logic [4:0] idex_rd; output logic [31:0] idex_rs1_data; output logic [31:0] idex_rs2_data; output logic [31:0] idex_imm; output logic [2:0] idex_funct3; output logic idex_reg_write; output logic idex_mem_read; output logic idex_mem_write; output logic idex_src_a_pc; output logic idex_src_b_imm; output logic [3:0] idex_alu_op; output logic [1:0] idex_wb_sel; output logic idex_branch; output logic [1",
+      "reuse": false
+    },
+    {
+      "name": "ex_stage",
+      "file": "rtl/ex_stage.sv",
+      "description": "EX 级（重写：新增 stall 输入、exmem_pc / exmem_instr 输出）：操作数前递选择、ALU、分支比较与目标解析、JAL/JALR 目标与 link、redirect 生成、store data 准备；拥有 EX/MEM 流水寄存器（exmem_*），并额外锁存 exmem_pc 与 exmem_instr 供 WB 产生 dbg_retire_pc / dbg_retire_insn。时序职责：stall=1（hazard_unit 的 ex_stall，来自 mem_stall）时冻结 EX/MEM 寄存器（valid 与全部字段保持），否则按 idex_valid 更新；rst_n 同步清 exmem_valid。Taken 分支/JAL/JALR 在 EX 组合产生 redirect 与 redirect_pc（JALR 目标为 (rs1+imm)&32'hFFFF_FFFE），自身不冻结，由顶层 epoch 与 hazard_unit 的 flush 清除更年轻项。",
+      "interfaces": "input logic clk; input logic rst_n; input logic stall; input logic idex_valid; input logic [31:0] idex_pc; input logic [31:0] idex_pc_plus4; input logic [31:0] idex_instr; input logic [4:0] idex_rs1; input logic [4:0] idex_rs2; input logic [4:0] idex_rd; input logic [31:0] idex_rs1_data; input logic [31:0] idex_rs2_data; input logic [31:0] idex_imm; input logic [2:0] idex_funct3; input logic idex_reg_write; input logic idex_mem_read; input logic idex_mem_write; input logic idex_src_a_pc; input logic idex_src_b_imm; input logic [3:0] idex_alu_op; input logic [1:0] idex_wb_sel; input logic idex_branch; input logic [1:0] idex_jump; input logic idex_ecall; input logic [1:0] fwd_a_sel; input logic [1:0] fwd_b_sel; input logic [31:0] wb_data; output logic redirect; output logic [31:0] redirect_pc; output logic exmem_valid; output logic [31:0] exmem_pc; output logic [31:0] exmem_pc_plus4; output logic [31:0] exmem_instr; output logic [31:0] exmem_alu_result; output logic [31:0] exmem_store_da",
+      "reuse": false
+    },
+    {
+      "name": "dcache",
+      "file": "rtl/dcache.sv",
+      "description": "D-Cache（新增）：与 I-Cache 同组织（256 B、直接映射、16 B line、16 line），write-through + write-allocate。load 命中：接受沿下一拍给出单周期 cpu_resp_valid + cpu_resp_rdata（整字）。load miss：保持请求、拉低 cpu_req_ready，先按 base/base+4/base+8/base+12 完成整行 refill，再返回一次响应。store 命中：按 cpu_req_be 更新缓存 lane 并发一次 write-through（地址保留 store 原始 addr[1:0]，外部按 {addr[31:2],2'b00} 定位整字，be 保持 SW=1111 / SH=addr[1]?1100:0011 / SB=0001<<addr[1:0]），write-through 被外部接受后的下一拍返回一次 cpu_resp_valid。store miss：先 refill 目标行、合并 byte lane，再发 1 次 write-through，然后返回响应；同一请求",
+      "interfaces": "input logic clk; input logic rst_n; input logic cpu_req_valid; input logic cpu_req_we; input logic [31:0] cpu_req_addr; input logic [31:0] cpu_req_wdata; input logic [3:0] cpu_req_be; output logic cpu_req_ready; output logic cpu_resp_valid; output logic [31:0] cpu_resp_rdata; input logic flush; input logic [1:0] flush_epoch; output logic mem_req_valid; output logic mem_req_we; output logic [31:0] mem_req_addr; output logic [31:0] mem_req_wdata; output logic [3:0] mem_req_be; input logic mem_req_ready; input logic mem_resp_valid; input logic [31:0] mem_resp_data",
+      "reuse": false
+    },
+    {
+      "name": "mem_stage",
+      "file": "rtl/mem_stage.sv",
+      "description": "MEM 级（重写：改为 D-Cache CPU 侧握手接口，新增 mem_stall 输出与 memwb_pc/memwb_instr）：负责向 dcache 发起唯一请求、生成 dmem 事务的 we/addr/wdata/be 语义、MEM 级 store data 前递（memwb_valid & memwb_reg_write & memwb_rd!=0 & memwb_rd==exmem_rs2 → wb_data）、load 字节/半字选择与符号/零扩展；拥有 MEM/WB 流水寄存器（memwb_*）。时序职责：(1) exmem_valid 且为 load/store 时发出 dc_req_valid（地址已按前递后 rs1+imm 计算好），dc_req_ready 接受后进入等待，dc_resp_valid 到达后才写 memwb_valid=1 —— store 因此天然等到 write-through 被外部接受后才退休；(2) mem_stall = exmem_valid & (exmem_mem_read|exmem_mem_write) & 事务未完成 ",
+      "interfaces": "input logic clk; input logic rst_n; input logic halted; input logic [1:0] flush_epoch; input logic exmem_valid; input logic [31:0] exmem_pc; input logic [31:0] exmem_pc_plus4; input logic [31:0] exmem_instr; input logic [31:0] exmem_alu_result; input logic [31:0] exmem_store_data; input logic [4:0] exmem_rs2; input logic [4:0] exmem_rd; input logic [2:0] exmem_funct3; input logic exmem_reg_write; input logic exmem_mem_read; input logic exmem_mem_write; input logic [1:0] exmem_wb_sel; input logic exmem_ecall; input logic [31:0] wb_data; output logic dc_req_valid; output logic dc_req_we; output logic [31:0] dc_req_addr; output logic [31:0] dc_req_wdata; output logic [3:0] dc_req_be; input logic dc_req_ready; input logic dc_resp_valid; input logic [31:0] dc_resp_rdata; output logic mem_stall; output logic memwb_valid; output logic [31:0] memwb_pc; output logic [31:0] memwb_pc_plus4; output logic [31:0] memwb_instr; output logic [31:0] memwb_alu_result; output logic [31:0] memwb_load_data;",
+      "reuse": false
+    },
+    {
+      "name": "wb_stage",
+      "file": "rtl/wb_stage.sv",
+      "description": "WB/提交级（重写：新增退休事件与 ECALL 提交时序）：写回数据选择（0=ALU/LUI，1=load 数据，2=pc+4 链接），rd==x0 丢弃，wb_we/wb_rd/wb_data 组合输出到 ID 寄存器堆。时序职责（唯一负责 halt 时序的模块）：(1) 退休事件 dbg_retire_valid = memwb_valid & !halted，同拍给出 dbg_retire_pc=memwb_pc、dbg_retire_insn=memwb_instr，每拍最多一个脉冲；store 因只有 write-through 被接受后 MEM 才置 memwb_valid，所以不会提前或重复退休。(2) ECALL 退休的那一拍（memwb_valid&memwb_ecall）产生一次退休脉冲，该拍 halted 仍为 0、exit_code 仍为 0；下一个时钟沿置 halted=1、exit_code<=reg_x10。(3) halted=1 后保持到复位，wb_we 强制 0、所有能力事件为 0、exit_code 稳定。(4) rst_n 同步清 halted/",
+      "interfaces": "input logic clk; input logic rst_n; input logic memwb_valid; input logic [31:0] memwb_pc; input logic [31:0] memwb_pc_plus4; input logic [31:0] memwb_instr; input logic [31:0] memwb_alu_result; input logic [31:0] memwb_load_data; input logic [4:0] memwb_rd; input logic memwb_reg_write; input logic [1:0] memwb_wb_sel; input logic memwb_ecall; input logic [31:0] reg_x10; output logic wb_we; output logic [4:0] wb_rd; output logic [31:0] wb_data; output logic halted; output logic [31:0] exit_code; output logic dbg_retire_valid; output logic [31:0] dbg_retire_pc; output logic [31:0] dbg_retire_insn",
+      "reuse": false
+    },
+    {
+      "name": "hazard_unit",
+      "file": "rtl/hazard_unit.sv",
+      "description": "纯组合冒险/停顿控制器（重写：新增 mem_stall 输入与 ex_stall 输出）：(1) load_use_stall = idex_valid & idex_mem_read & (idex_rd!=0) & ifid_valid & !redirect & (IF/ID 指令确实使用 rs1 或 rs2，按 opcode 判定)；(2) pc_stall = load_use_stall | ecall_pending | halted | mem_stall —— 送给 if_stage 的 stall，冻结 PC 与 IF/ID（ECALL halt-pending 期间 PC 保持、后续取指丢弃）；(3) if_flush = redirect | ecall_pending | halted —— 清 IF/ID valid 并取消在途取指；(4) id_flush = redirect | load_use_stall | mem_stall —— 向 ID/EX 写 bubble；(5) ex_stall = mem_stall —— 冻结 EX/MEM。优先级",
+      "interfaces": "input logic idex_valid; input logic idex_mem_read; input logic [4:0] idex_rd; input logic ifid_valid; input logic [31:0] ifid_instr; input logic redirect; input logic ecall_pending; input logic halted; input logic mem_stall; output logic load_use_stall; output logic pc_stall; output logic if_flush; output logic id_flush; output logic ex_stall",
+      "reuse": false
+    },
+    {
+      "name": "forwarding_unit",
+      "file": "rtl/forwarding_unit.sv",
+      "description": "纯组合 EX 操作数前递选择（保持不变）：EX/MEM（load 抑制）优先于 MEM/WB；x0 不前递；ID/EX 无效时两路选择均为 0。",
+      "interfaces": "input logic idex_valid; input logic [4:0] idex_rs1; input logic [4:0] idex_rs2; input logic exmem_valid; input logic exmem_reg_write; input logic [4:0] exmem_rd; input logic exmem_mem_read; input logic memwb_valid; input logic memwb_reg_write; input logic [4:0] memwb_rd; output logic [1:0] fwd_a_sel; output logic [1:0] fwd_b_sel",
+      "reuse": true
+    }
+  ],
+  "notes": "复用：forwarding_unit 端口与语义完全不变，直接复用 rtl/forwarding_unit.sv；其余 7 个既有文件因新增 Cache 握手、退休端口、epoch、exmem/memwb 的 pc/instr 字段以及 store 等到 write-through 接受才退休的时序而必须重写，新模块 icache/dcache 为 L1 新增。流水线寄存器归属：if_stage 持有 PC 与 IF/ID(ifid_*)；id_stage 持有 ID/EX(idex_*)；ex_stage 持有 EX/MEM(exmem_*)；mem_stage 持有 MEM/WB(memwb_*)；wb_stage 对 memwb_* 组合译码，只寄存 halted/exit_code 并产生 dbg_retire_*。顶层只做例化连线，外加 2 位 flush_epoch 计数器（redirect|ecall_hit 递增，复位为 0）以及 rst_n 对 imem_valid/dmem_valid 的输出级组合屏蔽；icache/dcache 的 mem_resp_valid 由顶层接 mem_req_ready（读数据在接受沿有效）。取指时序：if_stage 每个周期在 (!pend || ic_resp_valid) 时发一次 icache 请求，命中响应固定下一拍，因此缓存命中下稳态 CPI=1；ICache miss 时 cpu_req_ready=0，IF 冻结 PC、向 IF/ID 写 bubble，不产生新的 imem_valid。D-Cache 采用阻塞式：mem_stage 发一次请求后保持到 dc_resp_valid，期间 mem_stall 冻结 PC/IF-ID/ID-EX 并保持 EX/MEM；load 数据在 MEM 末有效，故 EX/MEM 的 load 仍被 forwarding_unit 抑制，load-use 由 hazard_unit 暂停 1 拍。优先级统一为 rst_n > redirect > ecall_pending/halted > load-use > mem_stall > 正常推进；flush 一律只清 valid，不依赖数据值。ALU op 编码 idex_alu_op[3:0]：0=ADD,1=SUB,2=SLL,3=SLT,4=SLTU,5=XOR,6=SRL,7=SRA,8=OR,9=AND,10=PASS_B(LUI)；idex_wb_sel[1:0]：0=ALU 结果,1=load 数据,2=pc+4；fwd_*_sel[1:0]：0=原始操作数,1=EX/MEM,2=MEM/WB(wb_data)。ECALL 在 ID 识别并置 ecall_pending、产生单周期 ecall_hit（顶层据此递增 epoch），ECALL 自身照常经 EX→MEM→WB 且不写寄存器、不访存；只有到达 WB 时才在那一拍产生 dbg_retire_valid，下一沿置 halted=1、exit_code=x10。store 的 memwb_valid 只在 write-through 被外部接受后置位，天然满足“所有更老 store 已确认后才允许 halted”。顶层 dbg_features 恒 3'b001，dbg_bp_resolve/dbg_bp_mispredict/dbg_ooo_issue/dbg_ooo_bypass 恒 0，halted=1 后全部能力事件为 0。"
+}

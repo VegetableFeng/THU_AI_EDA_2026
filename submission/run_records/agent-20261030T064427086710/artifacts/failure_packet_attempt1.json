@@ -1,0 +1,68 @@
+{
+  "attempt": 1,
+  "category": "compile",
+  "root_cause": "The top-level instantiation is out of sync with the stage modules it instantiates. It is a hybrid of a legacy ex_stage interface and the current one: rv32i5.sv drives u_ex_stage with bp_resolve_valid/bp_resolve_pc/bp_resolve_type/bp_resolve_taken/bp_resolve_target/bp_mispredict, which are not ports of ex_stage.sv, so elaboration fails. At the same time, the required input wb_data (reported as wb_wdata) on u_ex_stage, and the prediction-passthrough chain ifid_pred_valid/ifid_pred_next_pc (if_stage → id_stage) and idex_pred_valid/idex_pred_next_pc (id_stage → ex/ID-EX), are left unconnected. That leaves the nets behind them, especially bp_resolve_valid/bp_resolve_taken/bp_mispredict, undriven and therefore X. This is a pure interface/wiring generation mismatch; the pipeline datapath logic itself has not yet been exercised.",
+  "failing_checks": [
+    "wiring_missing_port_connections: u_ex_stage(ex_stage) missing input wb_wdata",
+    "wiring_missing_port_connections: u_id_stage(id_stage) missing idex_pred_next_pc, idex_pred_valid, ifid_pred_next_pc, ifid_pred_valid",
+    "wiring_missing_port_connections: u_if_stage(if_stage) missing ifid_pred_next_pc, ifid_pred_valid",
+    "wiring_undriven_signals: bp_mispredict, bp_resolve_taken, bp_resolve_valid"
+  ],
+  "involved_files": [
+    "rtl/rv32i5.sv",
+    "rtl/ex_stage.sv",
+    "rtl/id_stage.sv",
+    "rtl/if_stage.sv",
+    "rtl/branch_predictor.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Never rename modules, files or ports; rv32i5's public port set must match the plan interfaces exactly (clk/rst_n/imem_*/dmem_*/dbg_reg_addr/dbg_reg_data/halted/exit_code/dbg_features/dbg_retire_valid/dbg_retire_pc/dbg_retire_insn/dbg_bp_resolve/dbg_bp_mispredict/dbg_ooo_issue/dbg_ooo_bypass).",
+    "Do not instantiate ports on u_ex_stage that ex_stage.sv does not declare (bp_resolve_pc/type/taken/target, bp_mispredict); either derive dbg_bp_resolve/dbg_bp_mispredict inside the responsible module that owns the resolve state (ex_stage or the top-level resolve logic), or wire them to an existing real driver. Never leave bp_resolve_valid/bp_resolve_taken/bp_mispredict as undriven nets.",
+    "if_stage must register bp_pred_valid/bp_pred_next_pc into ifid_pred_valid/ifid_pred_next_pc on the IF/ID clock edge and clear them together with ifid_valid on flush/redirect/stall; the top-level must connect these outputs to id_stage's ifid_pred_* inputs.",
+    "id_stage must forward ifid_pred_valid/ifid_pred_next_pc into idex_pred_valid/idex_pred_next_pc and clear them together with idex_valid on flush/halt; the top-level must drive both ends explicitly.",
+    "Every declared input port of every instance must be explicitly connected (no implicit X): in particular the writeback data path into ex_stage (wb_data, reported as wb_wdata) must be wired to the WB result used for forwarding and store-data selection.",
+    "Keep all port widths and signedness as declared; dbg_bp_resolve/dbg_bp_mispredict must come from real pipeline resolve state (no counter or PC-pattern synthesis), and reset must not produce phantom resolve events."
+  ],
+  "evidence": "compile_error_tail: \"generated_attempt1.sv:259: error: port `bp_resolve_valid' is not a port of u_ex_stage\" (same for bp_resolve_pc/bp_resolve_type/bp_resolve_taken/bp_resolve_target/bp_mispredict); \"6 error(s) during elaboration.\" Hints: \"UNDRIVEN-SIGNALS: ... \\bp_mispredict、\\bp_resolve_taken、\\bp_resolve_valid ... 恒为 X\"; \"PORT-MISMATCH: 例化端口与模块声明不一致——常见于复用模块与参考实现/新生成模块混用导致接口约定不同.\"",
+  "previous_hypotheses": [],
+  "failure_brief": {
+    "stage": "compile",
+    "summary": "Teacher TB failed (Compile); failed checks: wiring_missing_port_connections, wiring_missing_port_connections, wiring_missing_port_connections, wiring_undriven_signals.",
+    "failed_checks": [
+      {
+        "name": "wiring_missing_port_connections",
+        "detail": "实例 u_ex_stage（ex_stage）漏接端口：wb_wdata——漏接的输入端口在仿真中恒为 X，会静默破坏握手/停机逻辑。"
+      },
+      {
+        "name": "wiring_missing_port_connections",
+        "detail": "实例 u_id_stage（id_stage）漏接端口：idex_pred_next_pc、idex_pred_valid、ifid_pred_next_pc、ifid_pred_valid——漏接的输入端口在仿真中恒为 X，会静默破坏握手/停机逻辑。"
+      },
+      {
+        "name": "wiring_missing_port_connections",
+        "detail": "实例 u_if_stage（if_stage）漏接端口：ifid_pred_next_pc、ifid_pred_valid——漏接的输入端口在仿真中恒为 X，会静默破坏握手/停机逻辑。"
+      },
+      {
+        "name": "wiring_undriven_signals",
+        "detail": "无驱动信号（X 源）：\\bp_mispredict、\\bp_resolve_taken、\\bp_resolve_valid"
+      }
+    ],
+    "total_failed_checks": 4,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [
+      "/mnt/f/MyDesktop/研一上/人工智能电路设计/THU_AI_EDA_2026/runs/agent/agent-20261030T064427086710/artifacts/generated_attempt1.sv:259: error: port ``bp_resolve_valid'' is not a port of u_ex_stage.",
+      "/mnt/f/MyDesktop/研一上/人工智能电路设计/THU_AI_EDA_2026/runs/agent/agent-20261030T064427086710/artifacts/generated_attempt1.sv:259: error: port ``bp_resolve_pc'' is not a port of u_ex_stage.",
+      "/mnt/f/MyDesktop/研一上/人工智能电路设计/THU_AI_EDA_2026/runs/agent/agent-20261030T064427086710/artifacts/generated_attempt1.sv:259: error: port ``bp_resolve_type'' is not a port of u_ex_stage.",
+      "/mnt/f/MyDesktop/研一上/人工智能电路设计/THU_AI_EDA_2026/runs/agent/agent-20261030T064427086710/artifacts/generated_attempt1.sv:259: error: port ``bp_resolve_taken'' is not a port of u_ex_stage.",
+      "/mnt/f/MyDesktop/研一上/人工智能电路设计/THU_AI_EDA_2026/runs/agent/agent-20261030T064427086710/artifacts/generated_attempt1.sv:259: error: port ``bp_resolve_target'' is not a port of u_ex_stage.",
+      "/mnt/f/MyDesktop/研一上/人工智能电路设计/THU_AI_EDA_2026/runs/agent/agent-20261030T064427086710/artifacts/generated_attempt1.sv:259: error: port ``bp_mispredict'' is not a port of u_ex_stage.",
+      "6 error(s) during elaboration."
+    ],
+    "hints": [
+      "UNDRIVEN-SIGNALS: 静态连线检查发现无驱动信号（\\bp_mispredict、\\bp_resolve_taken、\\bp_resolve_valid）——它们在仿真中恒为 X，会静默吞掉响应/数据。修复方式：在产生该信号的责任模块补驱动，或在顶层把实例输出正确连到该线网；这是最高优先级修复项。",
+      "PORT-MISMATCH: 例化端口与模块声明不一致——常见于复用模块与参考实现/新生成模块混用导致接口约定不同。以计划 interfaces 为准统一端口，或改用同一来源的实现。"
+    ],
+    "return_code": 6
+  }
+}

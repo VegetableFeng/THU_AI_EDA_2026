@@ -1,0 +1,71 @@
+{
+  "attempt": 6,
+  "category": "simulation",
+  "root_cause": "The design still retires correctly (no trace mismatches and no timeout), so this is an issue/control performance bug rather than a datapath error. While an older load is held in the LSU waiting on the external-memory handshake, younger independent ALU instructions are never allowed to enter/leave the issue path and complete, so dbg_ooo_bypass can never qualify. The most likely location is the per-instruction dispatch-ready selection in rename_unit, where a global LSU-ready/load-pending condition can block non-memory dispatch; if dispatch is already type-correct, the same symptom can come from issue selection being gated by the ROB head/load-pending state or from the ROB not accepting a younger ALU completion while the older load is outstanding.",
+  "failing_checks": [
+    "bench_ooo_overlap64"
+  ],
+  "involved_files": [
+    "rtl/rename_unit.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/issue_queue.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/rv32i5.sv",
+    "rtl/dcache.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename modules, ports, or files; all interfaces in the plan are frozen.",
+    "Preserve all currently passing functional behavior: no new trace mismatches, no timeout, and unchanged reset/halt/retire/exit_code semantics.",
+    "Allow younger independent ALU instructions to dispatch, issue, and complete while an older load is waiting on external memory; do not globally gate ALU dispatch/issue on lsu_disp_ready, load-pending, or ROB-head equality.",
+    "Keep the external memory handshake correct: at most one outstanding request, valid/address held until ready, and no retraction on flush or halt.",
+    "dbg_ooo_issue and dbg_ooo_bypass must be single-cycle events derived from real issue/completion state, at most one per instruction per cycle, never from counters or PC patterns.",
+    "Preserve the landed rename FIFO/bitmap refactor and keep checkpoint 2D-array writes constant-row-index (row-decoded) for synthesis; do not introduce other variable-index writes into unpacked arrays."
+  ],
+  "evidence": "Failure brief: stage=\"simulation\"; only failed check is \"bench_ooo_overlap64\"; detail=\"OoO benchmark saw no bypass/overlap while the load was waiting\"; trace_mismatches=[] and no timeout. Prior attempts already patched rv32i5.sv, execute_alu.sv, issue_queue.sv and rename_unit.sv without changing the symptom, so the remaining issue is likely in the load-pending/ready or ROB completion/dispatch boundary.",
+  "previous_hypotheses": [
+    {
+      "attempt": 2,
+      "root_cause": "Only the OoO-overlap observation fails while the program still retires correctly (no trace mismatches, no timeout, no other failing checks), so the design is functionally right but never exhibits/propagates the required 'younger independent ALU issues and completes while an older load waits on external memory' event. The two candidate mechanisms, in order, are: (1) the issue/wakeup path in issue_q",
+      "patched_files": [
+        "rtl/rv32i5.sv"
+      ]
+    },
+    {
+      "attempt": 3,
+      "root_cause": "The OoO-overlap failure is in the issue/control path rather than in commit or data forwarding: the issue queue/dispatch logic still serializes functional-unit issue, so while an older load is outstanding/waiting on external memory, no younger independent ALU instruction is accepted by execute_alu and dbg_ooo_bypass never fires. The power overrun is an implementation/power issue: large queue/ROB/re",
+      "patched_files": [
+        "rtl/execute_alu.sv",
+        "rtl/issue_queue.sv",
+        "rtl/rv32i5.sv"
+      ]
+    },
+    {
+      "attempt": 5,
+      "root_cause": "The currently actionable failure is a synthesis/frontend hang in rtl/rename_unit.sv, not a simulation behavior bug: the checkpoint-save allocation loop writes a row of the 2D unpacked checkpoint array with a variable row index (`ckpt_map_nxt[alloc_slot][i] = spec_map_nxt[i]`), which makes yosys read_verilog explode. Bisection shows removing just those writes drops yosys from >15 s to 1.1 s. The fu",
+      "patched_files": [
+        "rtl/rename_unit.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: bench_ooo_overlap64.",
+    "failed_checks": [
+      {
+        "name": "bench_ooo_overlap64",
+        "detail": "OoO benchmark saw no bypass/overlap while the load was waiting"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [
+      "performance_correctness"
+    ],
+    "compile_error_tail": [],
+    "hints": [
+      "OOO-BYPASS: 乱序旁路要求存在更老未完成 load 等待外存时，独立的更年轻 ALU 指令仍从发射队列被功能单元接受并完成（dbg_ooo_issue/ooo_bypass 来自真实内部状态）。检查：①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）。"
+    ],
+    "return_code": 1
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "project_name": "rv32i5_pipeline_l2_predictor",
+  "top_module": "rv32i5",
+  "modules": [
+    {
+      "name": "rv32i5",
+      "file": "rtl/rv32i5.sv",
+      "description": "【EXTEND】顶层：在 L1 基础上新增 branch_predictor 例化与连线；if_stage 的 bp_lookup_pc 接预测器，预测器输出 bp_pred_valid/bp_pred_next_pc 接 if_stage；ex_stage 的 bp_resolve_* 接预测器更新口；dbg_features 改为 3'b011，dbg_bp_resolve/dbg_bp_mispredict 由 ex_stage 事件经 rst_n&~halted 屏蔽，dbg_ooo_* 恒 0；flush_epoch 在 (redirect&~halted)|ecall_hit 时加 1；其余 Cache/流水线连线保持 L1。",
+      "interfaces": "input logic clk; input logic rst_n; output logic [31:0] imem_addr; input logic [31:0] imem_rdata; output logic imem_valid; input logic imem_ready; output logic dmem_valid; output logic dmem_we; output logic [31:0] dmem_addr; output logic [31:0] dmem_wdata; output logic [3:0] dmem_be; input logic [31:0] dmem_rdata; input logic dmem_ready; input logic [4:0] dbg_reg_addr; output logic [31:0] dbg_reg_data; output logic halted; output logic [31:0] exit_code; output logic [2:0] dbg_features; output logic dbg_retire_valid; output logic [31:0] dbg_retire_pc; output logic [31:0] dbg_retire_insn; output logic dbg_bp_resolve; output logic dbg_bp_mispredict; output logic dbg_ooo_issue; output logic dbg_ooo_bypass",
+      "reuse": false
+    },
+    {
+      "name": "if_stage",
+      "file": "rtl/if_stage.sv",
+      "description": "【EXTEND】IF 级：保留 L1 PC/IF-ID/pend/inflight_epoch 时序；新增动态预测：bp_lookup_pc 输出当前取指 PC；在 icache 请求接受沿捕获 bp_pred_valid/bp_pred_next_pc 到 inflight_pred_*，并用 bp_pred_next_pc（无预测即 pc+4）更新 pc；在写 IF/ID 的同一沿把 inflight_pred_* 写入 ifid_pred_*。stall/flush/redirect/flush_epoch 优先级与 L1 相同，预测元数据只随有效指令推进。",
+      "interfaces": "input logic clk; input logic rst_n; input logic stall; input logic flush; input logic redirect; input logic [31:0] redirect_pc; input logic [1:0] flush_epoch; output logic ic_req_valid; output logic [31:0] ic_req_addr; input logic ic_req_ready; input logic ic_resp_valid; input logic [31:0] ic_resp_data; output logic ifid_valid; output logic [31:0] ifid_pc; output logic [31:0] ifid_pc_plus4; output logic [31:0] ifid_instr; output logic [31:0] bp_lookup_pc; input logic bp_pred_valid; input logic [31:0] bp_pred_next_pc; output logic ifid_pred_valid; output logic [31:0] ifid_pred_next_pc",
+      "reuse": false
+    },
+    {
+      "name": "icache",
+      "file": "rtl/icache.sv",
+      "description": "I-Cache（L1 既有，复用）：256B 直接映射 16B line，CPU 侧单周期响应，miss 4 字 refill，epoch 丢弃。",
+      "interfaces": "input logic clk; input logic rst_n; input logic cpu_req_valid; input logic [31:0] cpu_req_addr; output logic cpu_req_ready; output logic cpu_resp_valid; output logic [31:0] cpu_resp_data; input logic flush; input logic [1:0] flush_epoch; output logic mem_req_valid; output logic [31:0] mem_req_addr; input logic mem_req_ready; input logic mem_resp_valid; input logic [31:0] mem_resp_data",
+      "reuse": true
+    },
+    {
+      "name": "id_stage",
+      "file": "rtl/id_stage.sv",
+      "description": "【EXTEND】ID 级：保留寄存器堆、译码、ECALL pending/hit 与 ID/EX 时序；新增 ifid_pred_valid/ifid_pred_next_pc 直通到 idex_pred_valid/idex_pred_next_pc（随 ID/EX valid 推进，flush 时数据 don't-care）。ECALL 仍只在 redirect=0 时置 pending/hit。",
+      "interfaces": "input logic clk; input logic rst_n; input logic flush; input logic redirect; input logic ifid_valid; input logic [31:0] ifid_pc; input logic [31:0] ifid_pc_plus4; input logic [31:0] ifid_instr; input logic wb_we; input logic [4:0] wb_rd; input logic [31:0] wb_data; input logic [4:0] dbg_reg_addr; output logic [31:0] dbg_reg_data; output logic [31:0] reg_x10; output logic ecall_pending; output logic ecall_hit; output logic idex_valid; output logic [31:0] idex_pc; output logic [31:0] idex_pc_plus4; output logic [31:0] idex_instr; output logic [4:0] idex_rs1; output logic [4:0] idex_rs2; output logic [4:0] idex_rd; output logic [31:0] idex_rs1_data; output logic [31:0] idex_rs2_data; output logic [31:0] idex_imm; output logic [2:0] idex_funct3; output logic idex_reg_write; output logic idex_mem_read; output logic idex_mem_write; output logic idex_src_a_pc; output logic idex_src_b_imm; output logic [3:0] idex_alu_op; output logic [1:0] idex_wb_sel; output logic idex_branch; output logic [1",
+      "reuse": false
+    },
+    {
+      "name": "ex_stage",
+      "file": "rtl/ex_stage.sv",
+      "description": "【EXTEND】EX 级：在 L1 ALU/前递/分支目标基础上新增预测比较与解析事件；计算实际下一 PC，与 idex_pred_next_pc 比较，产生 bp_mispredict；redirect 只在 bp_resolve_valid&bp_mispredict 时拉高，预测正确的 taken 不再 flush。bp_resolve_valid 对每条有效控制转移单周期脉冲（stall 时用内部 done 标志防止重复），输出 bp_resolve_pc/type/taken/target 供 branch_predictor 更新；bp_resolve_type: 01=条件分支,10=JAL,11=JALR。stall=1 冻结 EX/MEM 的 L1 职责不变。",
+      "interfaces": "input logic clk; input logic rst_n; input logic stall; input logic idex_valid; input logic [31:0] idex_pc; input logic [31:0] idex_pc_plus4; input logic [31:0] idex_instr; input logic [4:0] idex_rs1; input logic [4:0] idex_rs2; input logic [4:0] idex_rd; input logic [31:0] idex_rs1_data; input logic [31:0] idex_rs2_data; input logic [31:0] idex_imm; input logic [2:0] idex_funct3; input logic idex_reg_write; input logic idex_mem_read; input logic idex_mem_write; input logic idex_src_a_pc; input logic idex_src_b_imm; input logic [3:0] idex_alu_op; input logic [1:0] idex_wb_sel; input logic idex_branch; input logic [1:0] idex_jump; input logic idex_ecall; input logic [1:0] fwd_a_sel; input logic [1:0] fwd_b_sel; input logic [31:0] wb_data; output logic redirect; output logic [31:0] redirect_pc; output logic exmem_valid; output logic [31:0] exmem_pc; output logic [31:0] exmem_pc_plus4; output logic [31:0] exmem_instr; output logic [31:0] exmem_alu_result; output logic [31:0] exmem_store_da",
+      "reuse": false
+    },
+    {
+      "name": "dcache",
+      "file": "rtl/dcache.sv",
+      "description": "D-Cache（L1 既有，复用）：write-through+write-allocate，load/store 握手，epoch 丢弃，store 等 write-through 接受后响应。",
+      "interfaces": "input logic clk; input logic rst_n; input logic cpu_req_valid; input logic cpu_req_we; input logic [31:0] cpu_req_addr; input logic [31:0] cpu_req_wdata; input logic [3:0] cpu_req_be; output logic cpu_req_ready; output logic cpu_resp_valid; output logic [31:0] cpu_resp_rdata; input logic flush; input logic [1:0] flush_epoch; output logic mem_req_valid; output logic mem_req_we; output logic [31:0] mem_req_addr; output logic [31:0] mem_req_wdata; output logic [3:0] mem_req_be; input logic mem_req_ready; input logic mem_resp_valid; input logic [31:0] mem_resp_data",
+      "reuse": true
+    },
+    {
+      "name": "mem_stage",
+      "file": "rtl/mem_stage.sv",
+      "description": "MEM 级（L1 既有，复用）：D-Cache CPU 侧请求、load 扩展、MEM 级 store data 前递、MEM/WB 时序；mem_stall 处理保持不变。",
+      "interfaces": "input logic clk; input logic rst_n; input logic halted; input logic [1:0] flush_epoch; input logic exmem_valid; input logic [31:0] exmem_pc; input logic [31:0] exmem_pc_plus4; input logic [31:0] exmem_instr; input logic [31:0] exmem_alu_result; input logic [31:0] exmem_store_data; input logic [4:0] exmem_rs2; input logic [4:0] exmem_rd; input logic [2:0] exmem_funct3; input logic exmem_reg_write; input logic exmem_mem_read; input logic exmem_mem_write; input logic [1:0] exmem_wb_sel; input logic exmem_ecall; input logic [31:0] wb_data; output logic dc_req_valid; output logic dc_req_we; output logic [31:0] dc_req_addr; output logic [31:0] dc_req_wdata; output logic [3:0] dc_req_be; input logic dc_req_ready; input logic dc_resp_valid; input logic [31:0] dc_resp_rdata; output logic mem_stall; output logic memwb_valid; output logic [31:0] memwb_pc; output logic [31:0] memwb_pc_plus4; output logic [31:0] memwb_instr; output logic [31:0] memwb_alu_result; output logic [31:0] memwb_load_data;",
+      "reuse": true
+    },
+    {
+      "name": "wb_stage",
+      "file": "rtl/wb_stage.sv",
+      "description": "WB/提交级（L1 既有，复用）：写回选择、退休脉冲、ECALL 提交后下一沿置 halted/exit_code；dbg_retire_* 唯一来源。",
+      "interfaces": "input logic clk; input logic rst_n; input logic memwb_valid; input logic [31:0] memwb_pc; input logic [31:0] memwb_pc_plus4; input logic [31:0] memwb_instr; input logic [31:0] memwb_alu_result; input logic [31:0] memwb_load_data; input logic [4:0] memwb_rd; input logic memwb_reg_write; input logic [1:0] memwb_wb_sel; input logic memwb_ecall; input logic [31:0] reg_x10; output logic wb_we; output logic [4:0] wb_rd; output logic [31:0] wb_data; output logic halted; output logic [31:0] exit_code; output logic dbg_retire_valid; output logic [31:0] dbg_retire_pc; output logic [31:0] dbg_retire_insn",
+      "reuse": true
+    },
+    {
+      "name": "hazard_unit",
+      "file": "rtl/hazard_unit.sv",
+      "description": "冒险/停顿控制（L1 既有，复用）：组合产生 load_use_stall/pc_stall/if_flush/id_flush/ex_stall；redirect 在 L2 仅表示预测误判，优先级 rst_n>redirect>ecall_pending/halted>load-use>mem_stall 保持。",
+      "interfaces": "input logic idex_valid; input logic idex_mem_read; input logic [4:0] idex_rd; input logic ifid_valid; input logic [31:0] ifid_instr; input logic redirect; input logic ecall_pending; input logic halted; input logic mem_stall; output logic load_use_stall; output logic pc_stall; output logic if_flush; output logic id_flush; output logic ex_stall",
+      "reuse": true
+    },
+    {
+      "name": "forwarding_unit",
+      "file": "rtl/forwarding_unit.sv",
+      "description": "EX 前递选择（L1 既有，复用）：EX/MEM 优先于 MEM/WB，x0 不前递。",
+      "interfaces": "input logic idex_valid; input logic [4:0] idex_rs1; input logic [4:0] idex_rs2; input logic exmem_valid; input logic exmem_reg_write; input logic [4:0] exmem_rd; input logic exmem_mem_read; input logic memwb_valid; input logic memwb_reg_write; input logic [4:0] memwb_rd; output logic [1:0] fwd_a_sel; output logic [1:0] fwd_b_sel",
+      "reuse": true
+    },
+    {
+      "name": "alu",
+      "file": "rtl/alu.sv",
+      "description": "既有 ALU（复用）：按 idex_alu_op 执行 RV32I 整数运算，端口保持 L1 不变。",
+      "interfaces": "input logic [31:0] a; input logic [31:0] b; input logic [3:0] alu_op; output logic [31:0] result",
+      "reuse": true
+    },
+    {
+      "name": "branch_predictor",
+      "file": "rtl/branch_predictor.sv",
+      "description": "新增 L2 动态分支预测器：16 项直接映射 BTB（index=PC[5:2], tag=PC[31:6], 含 valid/target/type）与 16 项 2-bit 饱和 BHT（index=PC[5:2], 复位 01）。组合 lookup 用旧表内容产生 bp_pred_valid/bp_pred_next_pc（BTB miss 或无 Taken 时 PC+4）；时序更新只在 bp_resolve_valid 时进行：条件分支按实际方向更新 BHT，BTB miss&taken 才分配，hit 的 target/type 变化更新；JAL/JALR 只更新 BTB 不更新 BHT；被 squash 的项不更新（由 resolve_valid 保证）。",
+      "interfaces": "input logic clk; input logic rst_n; input logic [31:0] bp_lookup_pc; output logic bp_pred_valid; output logic [31:0] bp_pred_next_pc; input logic bp_resolve_valid; input logic [31:0] bp_resolve_pc; input logic [1:0] bp_resolve_type; input logic bp_resolve_taken; input logic [31:0] bp_resolve_target",
+      "reuse": false
+    }
+  ],
+  "notes": "复用：icache、dcache、mem_stage、wb_stage、hazard_unit、forwarding_unit、alu 保持 L1 文件与接口不变。扩展：rv32i5 新增 branch_predictor 例化与连线、dbg_features=3'b011、dbg_bp_* 门控、flush_epoch 在 (redirect&~halted)|ecall_hit 时加 1；if_stage 新增预测 lookup 与预测元数据锁存；id_stage 新增 ifid_pred_*→idex_pred_* 直通；ex_stage 新增实际下一 PC 比较、bp_resolve_* 单脉冲事件、bp_mispredict 与 redirect 仅误预测触发。新增 branch_predictor 文件。预测元数据路径：if_stage 在 icache 接受沿捕获 bp_pred_valid/bp_pred_next_pc，随 IF/ID 带 ifid_pred_valid/ifid_pred_next_pc，id_stage 原样带 idex_pred_valid/idex_pred_next_pc，ex_stage 用 idex_pred_valid?idex_pred_next_pc:idex_pc_plus4 作为预测下一 PC，与实际下一 PC 比较；预测正确的 taken 不 flush，误预测时 redirect=1、redirect_pc=实际下一 PC，并冲刷年轻项。ex_stage 内部 resolve_done 保证 stall 保持同一控制转移时 bp_resolve_valid/bp_mispredict 只脉冲一次。bp_resolve_type 编码：01=条件分支、10=JAL、11=JALR；idex_jump 沿用 L1 编码 00=none、01=JAL、10=JALR。branch_predictor：16 项直接映射 BTB（index=PC[5:2], tag=PC[31:6], 存 valid/target/type）和 16 项 2-bit BHT（index=PC[5:2], 复位 01）；lookup 用旧内容，写表在时钟沿；条件分支每次解析更新 BHT，BTB miss 且实际 taken 才分配，BTB hit 的 target/type 变化更新且不改变同拍预测；JAL/JALR 只分配/更新 BTB，不更新 BHT。时序职责分配：hazard_unit 组合产生 load-use/mem_stall/ecall_pending/halted 的 pc/if/id/ex 控制；wb_stage 唯一负责退休事件、ECALL 提交后 halted/exit_code；ex_stage 负责控制转移解析、预测比较和单次 bp_resolve 脉冲；if_stage 负责预测元数据随取指流水；top 负责 flush_epoch 与能力端口屏蔽。L1 Cache 握手、write-through、epoch 丢弃、store 等 write-through 接受后退休等合同不变。dbg_features=3'b011，dbg_ooo_issue/dbg_ooo_bypass 恒 0；rst_n=0 或 halted=1 时 dbg_bp_resolve/dbg_bp_mispredict 为 0，预测器更新被抑制；halted 后 imem_valid/dmem_valid 为 0，imem_addr 保持。"
+}

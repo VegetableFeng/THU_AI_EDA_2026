@@ -1,0 +1,62 @@
+{
+  "attempt": 3,
+  "category": "timeout",
+  "root_cause": "Only the 60 s watchdog fails, with no trace mismatches and no compile errors, so this is a liveness/handshake failure rather than a wrong-data result. After prior fixes to the rename/ROB/top/issue-queue/LSU group, the most likely remaining cause is in the fetch/response path: an I-cache miss/refill request is retracted or its response lost on flush/epoch mismatch, or IF/ID is overwritten while ID is stalled, so the pipeline never reaches and commits ECALL. A secondary dead-halt possibility is commit_unit or ECALL decode failing to assert halted/exit_code.",
+  "failing_checks": [
+    "simulation_timeout"
+  ],
+  "involved_files": [
+    "rtl/if_stage.sv",
+    "rtl/icache.sv",
+    "rtl/dcache.sv",
+    "rtl/commit_unit.sv",
+    "rtl/execute_alu.sv",
+    "rtl/id_stage.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename modules, files, ports, or any interface signal names from the plan contract.",
+    "Preserve synchronous active-low reset; during reset imem_valid/dmem_valid must be 0, and PC priority remains reset > redirect > ECALL freeze > load-use stall > PC+4.",
+    "Maintain at most one outstanding external request per interface; once mem_req_valid is asserted, hold valid/address/data/be until mem_req_ready, even across flush/halt; flush/halt may suppress only the response via the epoch gate.",
+    "IF/ID must never overwrite an unconsumed fetch response: issue/accept a fetch only when IF/ID is empty or draining this cycle, latch the inflight epoch at request acceptance, discard stale responses, and re-fetch without dropping req_pending.",
+    "ECALL must propagate through ID/EX/MEM/WB without being discarded by stalls; produce exactly one retire pulse, then assert halted with exit_code=x10 on the following cycle and keep all architectural/output state stable after halt.",
+    "Do not fabricate debug events or counters; preserve existing verified behavior in already-patched scheduler files and only revert them to a verified baseline if a regression is proven."
+  ],
+  "evidence": "Brief: failed_checks contains only \"simulation_timeout\"; detail says \"教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成\"; trace_mismatches is empty; compile_error_tail is empty. Prior attempts already patched rename_unit/reorder_buffer/rv32i5 and issue_queue/load_store_unit without changing the timeout.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The run produced only the simulation watchdog timeout, with no trace mismatches and no compile errors, so this is a liveness failure rather than a wrong-data result. The core either never reaches the ECALL/halt commit point or a structural stall/handshake never completes. The first candidate is a dead or undriven control wire at top-level integration (halted/exit_code, stop-fetch/ecall_pending, or",
+      "patched_files": [
+        "rtl/rename_unit.sv",
+        "rtl/reorder_buffer.sv",
+        "rtl/rv32i5.sv"
+      ]
+    },
+    {
+      "attempt": 2,
+      "root_cause": "The only failing check is the global 60 s simulation watchdog, with empty trace_mismatches, empty compile_error_tail and empty failing_suites, so this is a liveness/handshake deadlock, not a wrong-data result: the core stops making forward progress and either never retires the blocking instruction or never reaches the ECALL halt. Since rename_unit/reorder_buffer/rv32i5 were already patched with no",
+      "patched_files": [
+        "rtl/issue_queue.sv",
+        "rtl/load_store_unit.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: simulation_timeout.",
+    "failed_checks": [
+      {
+        "name": "simulation_timeout",
+        "detail": "教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": null
+  }
+}

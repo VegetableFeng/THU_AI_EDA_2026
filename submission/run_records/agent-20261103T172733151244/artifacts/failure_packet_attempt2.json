@@ -1,0 +1,61 @@
+{
+  "attempt": 2,
+  "category": "simulation",
+  "root_cause": "Functional/timing behavior is already correct: trace_mismatches/failing_suites are empty and return_code is 0; the failures are PPA-only (area 198158 vs 190000, power 0.0337 W vs 0.02 W). The dominant implementation defect is in rename_unit.sv: the checkpoint-save loop writes ckpt_map_nxt[alloc_slot][i] with a variable row index inside the big combinational block, so synthesis cannot infer constant-index per-row write enables and instead builds a wide 16-way write mux/decoder; this both inflates area and keeps the 16x32 checkpoint map toggling, consistent with the power regression after the prior area-focused patch. Row-decode the checkpoint write to constant-index rows and audit other variable-index writes. Secondary PPA headroom remains in the physical_register_file and load_store_unit large arrays/wide state, the rv32i5 top-level pipeline/debug fields, and ALU operand isolation.",
+  "failing_checks": [
+    "ppa_power_budget",
+    "ppa_area_budget"
+  ],
+  "involved_files": [
+    "rtl/rename_unit.sv",
+    "rtl/physical_register_file.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/rv32i5.sv",
+    "rtl/execute_alu.sv",
+    "rtl/id_stage.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Never rename modules, ports, or files; keep the rv32i5/icache/dcache/branch_predictor/if_stage/id_stage/rename_unit/PRF/IQ/ALU/LSU/ROB/commit_unit interface contract unchanged.",
+    "All PPA edits must be equivalence-preserving: the teacher TB must remain PASS, with no change to architectural results, retire events, halt/exit_code, or debug protocol.",
+    "Fix rename_unit checkpoint-save by row-decoding writes to constant row indices; audit every variable-index write into unpacked 2D arrays in rename_unit. The FIFO->bitmap free-list refactor is already correct and must not be touched.",
+    "Add write/clock enables and operand isolation only where they cannot suppress a required write or alter single-cycle retire, ECALL halt, load-use stall, flush/epoch, cache request-hold, or ready/valid timing.",
+    "Do not remove fields needed for commit/retire/debug; only remove wide fields with no consumer.",
+    "If reducing cache rows or table entries, preserve capacity assumptions and all miss/refill/held-request protocol behavior."
+  ],
+  "evidence": "Brief: \"failed checks: ppa_power_budget, ppa_area_budget\"; \"总功耗 0.0337 W 超预算 0.02 W\"; \"面积 198158 超预算 190000.0\"; trace_mismatches=[], failing_suites=[], compile_error_tail=[], return_code=0. Prior patch reduced area from 215820 to 198158 but power rose from 0.0218 W to 0.0337 W.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "功能与协议层面 TB 已全部通过（trace_mismatches 为空、failing_suites 为空、return_code 0），失败仅为实现代价超预算：面积 215820 vs 190000（+13.6%）、总功耗 0.0218 W vs 0.02 W（+9%）。根因是 RTL 过度冗余而非逻辑错误：(1) rename_unit 的 checkpoint 表按 16 个槽 × 32 位 spec_map 全量保存，且大向量每拍无条件重写、无写使能，面积与翻转率双高；(2) I/D-Cache 行数/组数配置超出需要；(3) ROB/IQ 表项保留了无消费方的宽字段（pc/insn 等只在提交头使用）；(4) ALU 操作数无隔离，无效拍仍驱动大位宽组合逻辑。需按缺陷清单做等价重构（加写使能、操作数隔离、降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字",
+      "patched_files": [
+        "rtl/dcache.sv",
+        "rtl/execute_alu.sv",
+        "rtl/icache.sv",
+        "rtl/issue_queue.sv",
+        "rtl/rename_unit.sv",
+        "rtl/reorder_buffer.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_power_budget, ppa_area_budget.",
+    "failed_checks": [
+      {
+        "name": "ppa_power_budget",
+        "detail": "总功耗 0.0337 W 超预算 0.02 W。按缺陷清单做等价重构：大向量每拍无条件重写加写使能、ALU 操作数隔离；TB 必须保持 PASS。"
+      },
+      {
+        "name": "ppa_area_budget",
+        "detail": "面积 198158 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。"
+      }
+    ],
+    "total_failed_checks": 2,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

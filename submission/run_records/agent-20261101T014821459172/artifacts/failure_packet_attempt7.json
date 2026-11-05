@@ -1,0 +1,69 @@
+{
+  "attempt": 7,
+  "category": "timeout",
+  "root_cause": "The core never reaches a terminal ECALL halt within 60 s, while there are no retire-trace mismatches or compile errors, so this is a liveness/protocol failure rather than wrong retired data. Since the already-patched rename/ROB/commit/top path did not change the symptom, the leading suspect is the untouched halt/ECALL propagation and front-end backpressure path: id_stage may fail to mark or hold the ECALL valid while ecall_pending stops fetch, or if_stage may overwrite/drop the fetch response so the ECALL never commits. If that path is correct, the timeout is a structural stall from a missing issue/LSU completion or a cache request/response/idle that never completes; the full per-cycle trace is needed to distinguish a frozen PC from a PC that marches past the image.",
+  "failing_checks": [
+    "simulation_timeout"
+  ],
+  "involved_files": [
+    "rtl/id_stage.sv",
+    "rtl/if_stage.sv",
+    "rtl/issue_queue.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/icache.sv",
+    "rtl/dcache.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename or change ports/modules/files; preserve the rv32i5 top-level interface and every cache/LSU/issue-queue port width and semantics.",
+    "ECALL must remain valid through ID, EX, MEM and WB during stalls; ecall_pending/halted must not suppress the ECALL itself. halted and exit_code must assert together on the edge after the single ECALL retire and then remain stable.",
+    "IF/ID must not be overwritten while an unconsumed instruction is valid; issue a fetch only when IF/ID is empty or draining. A stale/dropped cache response must be retried, not left with req_pending stuck.",
+    "External memory handshakes: at most one outstanding request; hold mem_req_valid and address stable until mem_req_ready. Do not abort an in-flight request on flush or halt; use epoch checks only to discard stale responses, and make idle reflect no outstanding request/response.",
+    "Every dispatched ALU/load/store entry must eventually produce exactly one completion/store_done; do not lose queue entries, duplicate retire events, or violate ROB/issue ordering.",
+    "If a previously patched file must be touched, re-evaluate it against the verified baseline before layering another change; preserve debug/retire event timing and feature outputs."
+  ],
+  "evidence": "Brief: stage=simulation; summary=\"Teacher TB failed (Simulation); failed checks: simulation_timeout\"; detail=\"教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成\"; trace_mismatches=[] and compile_error_tail=[] indicate no data mismatch or compile error reported. Prior attempts patched rename/ROB/top and commit_unit with the same timeout, so those hypotheses are falsified.",
+  "previous_hypotheses": [
+    {
+      "attempt": 4,
+      "root_cause": "Only simulation_timeout is reported, with no trace mismatches and no compile errors, so this is a global liveness/deadlock: the core never reaches a stable ECALL halt, either because the in-order ROB/rename path stops making forward progress (head never becomes commit-valid, squash/store-done/free-list/checkpoint stall) or because the ECALL entry never reaches commit_unit with bus_idle and therefo",
+      "patched_files": [
+        "rtl/rename_unit.sv",
+        "rtl/reorder_buffer.sv",
+        "rtl/rv32i5.sv"
+      ]
+    },
+    {
+      "attempt": 5,
+      "root_cause": "Only simulation_timeout is reported, with no trace mismatches or compile errors, so the design never reaches the terminal ECALL halt; the same timeout survived patches to fetch/caches/LSU/IQ and rename/ROB/top, leaving the untouched halt and control-completion path. The most likely defect is in commit_unit: an ECALL may retire but halted/exit_code are not latched together on the next edge and held",
+      "patched_files": [
+        "rtl/rv32i5.sv"
+      ]
+    },
+    {
+      "attempt": 6,
+      "root_cause": "The only reported failure is a 60 s simulation timeout with no trace mismatches and no compile errors, so this is a liveness/protocol failure rather than wrong retired data. The ECALL may be decoded/committed but never latch halted/exit_code, or an untreated issue/execute/commit ready-valid path never completes. The timeout survived patches to fetch/caches/LSU/IQ and rename/ROB/top, so the remaini",
+      "patched_files": [
+        "rtl/commit_unit.sv",
+        "rtl/rv32i5.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: simulation_timeout.",
+    "failed_checks": [
+      {
+        "name": "simulation_timeout",
+        "detail": "教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": null
+  }
+}

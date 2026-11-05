@@ -1,0 +1,59 @@
+{
+  "attempt": 3,
+  "category": "simulation",
+  "root_cause": "This is not a functional, timing or handshake failure: the teacher TB is functionally clean (trace_mismatches empty, failing_suites empty, return_code 0) and the only failing check is the non-functional PPA gate — synthesized area 215237 library units vs the 190000 budget (~13% over). The dominant storage sink is the rename checkpoint map in rename_unit (≈16 checkpoints × 32 entries × 6-bit pdst ≈ 3072 flops, roughly 3× the 32×32 physical register file), which is also where the checkpoint-save loop performs a variable-row-index write into an unpacked 2D array (the exact construct that made yosys read_verilog hang in the prior repair state). Secondary sinks are cache row/line storage (icache/dcache), the wide per-entry payloads carried in the issue queue / ROB (pc, insn, imm, pred_next_pc, pdst/old_prd stored per entry even when only control instructions consume them), and the BTB/target tables in the branch predictor. The previous patch wave touched this same storage set but did not structurally shrink it, so the same area gate still fails; the repair must be an equivalence-preserving restructuring (row-decoded constant-index checkpoint writes, compressed/parameterized checkpoint storage consistent with ROB depth, fewer cache rows, removal of wide fields with no consumer) rather than another control-path change.",
+  "failing_checks": [
+    "ppa_area_budget"
+  ],
+  "involved_files": [
+    "rtl/rename_unit.sv",
+    "rtl/icache.sv",
+    "rtl/dcache.sv",
+    "rtl/issue_queue.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/branch_predictor.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename any port, module or file; keep the interface contract exactly as listed for rv32i5, icache, dcache, branch_predictor, if_stage, id_stage, rename_unit, physical_register_file, issue_queue, execute_alu, load_store_unit, reorder_buffer, commit_unit.",
+    "TB must stay PASS: trace_mismatches and failing_suites must remain empty and return_code 0; the refactor must be behavior-equivalent at the architectural and debug-event level.",
+    "Area target: bring synthesized area below 190000 library units (from 215237) by removing real storage, not by re-timing or by deleting observable debug state.",
+    "In rename_unit.sv, rewrite every variable-row-index write into the 2D unpacked checkpoint array as constant-index row-decoded writes (for r = 0..15 if (alloc_slot == r) for i = 0..31 ckpt_map_nxt[r][i] = spec_map_nxt[i]) so each write has a constant row index; audit for any other variable-index write into unpacked arrays and do the same. Variable-row reads are fine.",
+    "Do not touch the already-correct FIFO→bitmap free-list refactor in rename_unit.sv.",
+    "Any checkpoint-storage reduction must preserve precise rename/restore semantics: checkpoint captures state AFTER the branch's own allocation (its rd mapping and own free-list dequeue); dispatch is suppressed on the restore cycle; squash compare handles 3-bit ROB wrap ((i - sq - 1) & 7) < ((tail - sq - 1) & 7).",
+    "Any cache row/way cut in icache.sv/dcache.sv must keep the cache protocol intact: one in-flight external request, valid/addr held until ready, no abort of an in-flight refill, epoch-gated response discard after flush, store hits merge only byte-enable-covered bytes, store miss must not assemble a stale line.",
+    "Preserve all timing corners unchanged: one dbg_retire_valid per committed instruction, load-use stall exactly one cycle, taken-redirect ≤ 2 bubbles, ECALL keeps valid through ID→EX→MEM→WB and produces halted=1 with exit_code=x10 on the next edge, no cycle with halted=0 and exit_code!=0."
+  ],
+  "evidence": "summary: \"Teacher TB failed (Simulation); failed checks: ppa_area_budget.\"; detail: \"面积 215237 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。\"; \"trace_mismatches\": [], \"failing_suites\": [], \"return_code\": 0; repair state: \"yosys read_verilog hangs on rtl/rename_unit.sv ... the checkpoint-save loop in the allocation branch ... writes a row of the 2D unpacked array with a VARIABLE row index ... row-decode the write so every write is constant-index\".",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The only failing check is the PPA area gate: synthesized area 215237 exceeds the 190000-library-unit budget by ~13%. There is no data/control, protocol, or timing mismatch (trace_mismatches empty, failing_suites empty, return_code 0) — the design is functionally correct and the repair is an equivalence-preserving area reduction. The three named hotspots are redundant checkpoint/table storage (rena",
+      "patched_files": [
+        "rtl/dcache.sv",
+        "rtl/icache.sv",
+        "rtl/issue_queue.sv",
+        "rtl/load_store_unit.sv",
+        "rtl/rename_unit.sv",
+        "rtl/reorder_buffer.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_area_budget.",
+    "failed_checks": [
+      {
+        "name": "ppa_area_budget",
+        "detail": "面积 215237 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

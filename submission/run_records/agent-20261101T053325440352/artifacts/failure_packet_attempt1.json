@@ -1,0 +1,43 @@
+{
+  "attempt": 1,
+  "category": "timeout",
+  "root_cause": "The run produced only the simulation watchdog timeout, with no trace mismatches and no compile errors, so this is a liveness failure rather than a wrong-data result. The core either never reaches the ECALL/halt commit point or a structural stall/handshake never completes. The first candidate is a dead or undriven control wire at top-level integration (halted/exit_code, stop-fetch/ecall_pending, or a completion/ready signal), followed by permanent backpressure in issue/rename/ROB or a load-store/cache response path. The brief has no PC-freeze pattern, so the exact stage cannot be isolated from the text alone.",
+  "failing_checks": [
+    "simulation_timeout"
+  ],
+  "involved_files": [
+    "rtl/rv32i5.sv",
+    "rtl/issue_queue.sv",
+    "rtl/rename_unit.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/commit_unit.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Keep every module, file, and port name/width exactly as in the plan/interface contract; do not rename or delete ports or modules.",
+    "Preserve synchronous active-low reset behavior at the rising clk edge, including dmem_valid=0 during reset and PC priority reset > redirect > ECALL halt freeze > load-use stall > PC+4.",
+    "Preserve halt/retire timing: ECALL must survive ID-to-WB, each committed instruction produces exactly one single-cycle dbg_retire_valid, halted and exit_code appear together on the next edge after ECALL commit, and all outputs/architectural state remain stable after halt.",
+    "Preserve external handshakes: at most one outstanding request per interface, hold valid/addr until ready, never abort an in-flight request on flush/halt, suppress only the response via epoch, and keep imem_addr[1:0]=00 while running.",
+    "Keep the load-use stall at exactly one cycle, preserve EX/MEM-over-MEM/WB forwarding and same-address WB-to-ID read behavior, and do not add stalls/flushes outside load-use or redirect.",
+    "Cache refill requests must remain asserted until handshaken, stores must not merge stale lines, and external request valid must not be gated by halted/flush."
+  ],
+  "evidence": "Brief quotes: \"stage\": \"simulation\"; \"summary\": \"Teacher TB failed (Simulation); failed checks: simulation_timeout.\"; detail: \"教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。\"; \"trace_mismatches\": []; \"compile_error_tail\": [].",
+  "previous_hypotheses": [],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: simulation_timeout.",
+    "failed_checks": [
+      {
+        "name": "simulation_timeout",
+        "detail": "教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": null
+  }
+}

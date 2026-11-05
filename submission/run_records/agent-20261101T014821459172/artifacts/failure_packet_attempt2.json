@@ -1,0 +1,48 @@
+{
+  "attempt": 2,
+  "category": "timeout",
+  "root_cause": "Only simulation_timeout is reported, with empty trace_mismatches and no compile tail, so this is a global liveness/deadlock rather than a wrong-data failure. The most likely cause is an undriven or misconnected ready/stop-fetch/commit-metadata net in the rv32i5 top-level integration, or an equivalent rename/ROB/issue backpressure loop: fetch or dispatch stops permanently and no ECALL reaches commit, so halted is never asserted. The ECALL/exit_code halt path is the secondary suspect once the structural stall is ruled out.",
+  "failing_checks": [
+    "simulation_timeout"
+  ],
+  "involved_files": [
+    "rtl/rv32i5.sv",
+    "rtl/commit_unit.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/rename_unit.sv",
+    "rtl/issue_queue.sv",
+    "rtl/if_stage.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename any modules, files, or ports; preserve the exact interface contract including all debug outputs.",
+    "Keep the synchronous active-low reset semantics; dmem_valid must be 0 during reset and PC priority reset > redirect > ECALL freeze > load-use > PC+4 must be preserved.",
+    "Do not retract an issued imem/dmem request: hold valid and address until ready; halt/flush may suppress only responses and must not abort an in-flight transaction.",
+    "Preserve the ECALL/halt sequence: ECALL remains valid through ID/EX/MEM/WB, exactly one dbg_retire_valid on the commit edge, halted/exit_code=x10 on the next edge, and stable outputs while halted.",
+    "Preserve one retire event per committed instruction and no retire events for squashed, invalid, or stalled entries.",
+    "Every module output used by another module must be driven and connected at the rv32i5 top level; avoid combinational ready loops and pipeline-register overwrite without backpressure."
+  ],
+  "evidence": "failure brief: \"stage\": \"simulation\"; sole failed check \"simulation_timeout\" with detail \"教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。\"; \"trace_mismatches\": [] and \"compile_error_tail\": [].",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The failure is a compile/elaboration break in the generated top level, rtl/rv32i5.sv, not a datapath logic bug. The file does not parse: syntax errors at lines 3221–3274 ('Invalid module instantiation', 'Invalid module item'), plus a duplicate loop variable ('i' already declared at 3312, first declared at 3077). Because the instantiation block is malformed, the three instances u_rob (reorder_buffe"
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: simulation_timeout.",
+    "failed_checks": [
+      {
+        "name": "simulation_timeout",
+        "detail": "教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": null
+  }
+}

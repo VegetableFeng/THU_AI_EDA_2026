@@ -1,0 +1,98 @@
+{
+  "attempt": 1,
+  "category": "simulation",
+  "root_cause": "The dominant data-path defect is in the sub-word load result path: byte/half loads are always sign-extended, so LBU/LHU return 0xFFFFFFxx / 0xFFFFxxxx instead of zero-extended values; this exactly explains all six t06 mismatches and corrupts the CRC benchmark's x3/exit_code (the changed data-dependent flow can also alter its retired-instruction count). Separately, the OoO path never asserts dbg_ooo_issue and shows no younger independent ALU issue/completion while an older load waits, indicating rename/issue-queue dispatch is serialized behind the load or the OoO debug/event path is not driven from real issue state. The +17 CRC retirement count also warrants checking that dbg_retire_valid is a single pulse per committed instruction and is not repeated while commit waits for the store/external handshake.",
+  "failing_checks": [
+    "t06_load_store",
+    "ooo_load_overlap_rename",
+    "bench_crc32_64bytes",
+    "bench_ooo_overlap64"
+  ],
+  "involved_files": [
+    "rtl/load_store_unit.sv",
+    "rtl/issue_queue.sv",
+    "rtl/rv32i5.sv",
+    "rtl/rename_unit.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/commit_unit.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename modules, files, or ports and do not change port widths; keep the published rv32i5/icache/dcache/issue_queue/LSU/ROB/commit_unit interfaces exactly.",
+    "Preserve passing behavior: signed LB/LH sign-extension, SB/SH byte-enable lanes (t06b), load-use one-cycle behavior (t07), store-to-load forwarding (t08), base ALU/branch/jump results, and existing halt/ECALL timing.",
+    "Implement LBU/LHU as zero-extension, LB/LH as sign-extension, and LW as full-word; do not alter store byte enables or address alignment.",
+    "Rename/issue logic must allow a younger ALU instruction with ready operands to issue and complete while an older load is outstanding; do not serialize issue behind load completion.",
+    "dbg_ooo_issue and dbg_ooo_bypass must be single-cycle events derived from real issue/execution state, not counters or PC patterns, and flushed/invalid entries must not count.",
+    "dbg_retire_valid must pulse exactly once per committed instruction, must not repeat while commit stalls on a store or external wait, and wrong-path/flushed instructions must not retire; halted/exit_code timing must remain stable.",
+    "Keep external request valid/address stable until ready; do not abort an in-flight request on halt or flush."
+  ],
+  "evidence": "t06: x7 expected 0x000000ff got 0xffffffff; x8 0x00000080 got 0xffffff80; x12 0x000080ff got 0xffff80ff; x15 0x00008000 got 0xffff8000; x19 0x000000a5 got 0xffffffa5; x24 0x0000a500 got 0xffffa500 (all exactly sign-extended instead of zero-extended). ooo_load_overlap_rename: 'missing issue evidence' and 'no independent younger ALU execution while older load waits for external memory'. bench_crc32_64bytes: exit_code 0xffbae609 got 0xfb476e6d, x3 0x004519f6 got 0x04b89192, 'reference instruction count 3185 != retirement count 3202'. bench_ooo_overlap64: 'OoO benchmark saw no bypass/overlap while the load was waiting'.",
+  "previous_hypotheses": [],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: t06_load_store, t06_load_store, t06_load_store, t06_load_store.",
+    "failed_checks": [
+      {
+        "name": "t06_load_store",
+        "detail": "x7 期望 0x000000ff 得到 0xffffffff"
+      },
+      {
+        "name": "t06_load_store",
+        "detail": "x8 期望 0x00000080 得到 0xffffff80"
+      },
+      {
+        "name": "t06_load_store",
+        "detail": "x12 期望 0x000080ff 得到 0xffff80ff"
+      },
+      {
+        "name": "t06_load_store",
+        "detail": "x15 期望 0x00008000 得到 0xffff8000"
+      },
+      {
+        "name": "t06_load_store",
+        "detail": "x19 期望 0x000000a5 得到 0xffffffa5"
+      },
+      {
+        "name": "t06_load_store",
+        "detail": "x24 期望 0x0000a500 得到 0xffffa500"
+      },
+      {
+        "name": "ooo_load_overlap_rename",
+        "detail": "missing issue evidence"
+      },
+      {
+        "name": "ooo_load_overlap_rename",
+        "detail": "no independent younger ALU execution while older load waits for external memory"
+      },
+      {
+        "name": "bench_crc32_64bytes",
+        "detail": "exit_code 期望 0xffbae609 得到 0xfb476e6d"
+      },
+      {
+        "name": "bench_crc32_64bytes",
+        "detail": "x3 期望 0x004519f6 得到 0x04b89192"
+      },
+      {
+        "name": "bench_crc32_64bytes",
+        "detail": "reference instruction count 3185 != retirement count 3202"
+      },
+      {
+        "name": "bench_ooo_overlap64",
+        "detail": "OoO benchmark saw no bypass/overlap while the load was waiting"
+      }
+    ],
+    "total_failed_checks": 12,
+    "trace_mismatches": [],
+    "failing_suites": [
+      "base",
+      "ooo",
+      "performance_correctness"
+    ],
+    "compile_error_tail": [],
+    "hints": [
+      "OOO-BYPASS: 乱序旁路要求存在更老未完成 load 等待外存时，独立的更年轻 ALU 指令仍从发射队列被功能单元接受并完成（dbg_ooo_issue/ooo_bypass 来自真实内部状态）。检查：①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）。",
+      "ISSUE-EVIDENCE: dbg_ooo_issue 从未断言 = 整数发射队列不存在或从未乱序发射。对照 spec D.1/D.5 检查：是否存在独立 issue_queue 模块；分派（rename→IQ 顺序入队）与发射（IQ 乱序出队）是否分离；ALU 指令源 PR ready 即发射，不等待任何更老 load；dbg_ooo_issue 在指令被发射队列接受的拍产生单拍脉冲。若当前实现是顺序单发射（EX 只有一条固定通路），需要按 spec D.4 重构为 issue_queue + 独立 ALU/LSU 通路。"
+    ],
+    "return_code": 1
+  }
+}

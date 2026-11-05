@@ -1,0 +1,73 @@
+{
+  "attempt": 6,
+  "category": "compile",
+  "root_cause": "The actionable failure is a synthesis/compile front-end hang, not a functional, timing, or handshake bug: the TB is clean and passes with no trace mismatches, but yosys read_verilog hangs on rtl/rename_unit.sv. Bisection located the exact culprit in the checkpoint-save loop of the allocation branch, where a row of the 2D unpacked checkpoint map is written with a variable row index (ckpt_map_nxt[alloc_slot][i] = spec_map_nxt[i]); this must be rewritten as constant-index row-decoded writes, and any other variable-index writes into unpacked arrays in rename_unit must be audited. The brief's ppa_area_budget number is not the defect to chase in this state.",
+  "failing_checks": [
+    "synthesis_gate"
+  ],
+  "involved_files": [
+    "rtl/rename_unit.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Never rename ports, modules, or files; keep rtl/rename_unit.sv's module name and full port list unchanged.",
+    "Preserve the teacher TB PASS and all cycle-accurate architectural behavior; the rewrite must be equivalence-preserving.",
+    "Rewrite every variable-row-index write into an unpacked 2D array as a constant-index row-decoded write, e.g. loop over r and test alloc_slot == r before writing ckpt_map_nxt[r][i].",
+    "Audit rename_unit.sv for any other variable-index writes into unpacked arrays; bit-vector arrays such as slot_* and free_vec_nxt are safe, 2D unpacked arrays are the danger.",
+    "Do not touch the already-correct FIFO-to-bitmap refactor.",
+    "Do not gate or alter functional logic merely to satisfy synthesis; the fix must only change how writes are expressed so yosys can elaborate."
+  ],
+  "evidence": "CURRENT FAILING CHECK: 'synthesis_gate - yosys read_verilog hangs on rtl/rename_unit.sv.' Bisection: 'Variable-row-index WRITES into an unpacked 2D array make the frontend explode'; culprit lines 'for (i = 0; i < 32; i = i + 1) ckpt_map_nxt[alloc_slot][i] = spec_map_nxt[i];'; 'removing just these 3 lines drops yosys from >15s hang to 1.1s'; 'Variable-row READS are fine'; 'FIFO->bitmap refactor already landed and is correct; do not touch it.' Brief separately reports ppa_area_budget 215588 > 190000 with trace_mismatches empty and return_code 0.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The only failing check is the PPA area gate: synthesized area 215237 exceeds the 190000-library-unit budget by ~13%. There is no data/control, protocol, or timing mismatch (trace_mismatches empty, failing_suites empty, return_code 0) — the design is functionally correct and the repair is an equivalence-preserving area reduction. The three named hotspots are redundant checkpoint/table storage (rena",
+      "patched_files": [
+        "rtl/dcache.sv",
+        "rtl/icache.sv",
+        "rtl/issue_queue.sv",
+        "rtl/load_store_unit.sv",
+        "rtl/rename_unit.sv",
+        "rtl/reorder_buffer.sv"
+      ]
+    },
+    {
+      "attempt": 3,
+      "root_cause": "This is not a functional, timing or handshake failure: the teacher TB is functionally clean (trace_mismatches empty, failing_suites empty, return_code 0) and the only failing check is the non-functional PPA gate — synthesized area 215237 library units vs the 190000 budget (~13% over). The dominant storage sink is the rename checkpoint map in rename_unit (≈16 checkpoints × 32 entries × 6-bit pdst ≈",
+      "patched_files": [
+        "rtl/branch_predictor.sv",
+        "rtl/dcache.sv",
+        "rtl/icache.sv",
+        "rtl/issue_queue.sv",
+        "rtl/reorder_buffer.sv"
+      ]
+    },
+    {
+      "attempt": 5,
+      "root_cause": "This is a pure PPA area-gate failure, not a functional bug: the teacher TB is clean (trace_mismatches empty, failing_suites empty, return_code 0), but synthesized area is 215237 vs the 190000-library-unit budget. Two prior equivalence-preserving area rounds already edited dcache/icache/issue_queue/load_store_unit/reorder_buffer/rename_unit/branch_predictor without moving the gate, so the dominant ",
+      "patched_files": [
+        "rtl/commit_unit.sv",
+        "rtl/execute_alu.sv",
+        "rtl/id_stage.sv",
+        "rtl/physical_register_file.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_area_budget.",
+    "failed_checks": [
+      {
+        "name": "ppa_area_budget",
+        "detail": "面积 215588 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

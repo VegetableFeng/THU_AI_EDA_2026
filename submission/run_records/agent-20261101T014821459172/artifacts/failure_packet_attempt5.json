@@ -1,0 +1,68 @@
+{
+  "attempt": 5,
+  "category": "timeout",
+  "root_cause": "Only simulation_timeout is reported, with no trace mismatches or compile errors, so the design never reaches the terminal ECALL halt; the same timeout survived patches to fetch/caches/LSU/IQ and rename/ROB/top, leaving the untouched halt and control-completion path. The most likely defect is in commit_unit: an ECALL may retire but halted/exit_code are not latched together on the next edge and held (e.g., halt qualified by bus_idle only on the retire cycle, or cleared afterwards), so the TB runs forever. If commit metadata is healthy, execute_alu never returning alu_complete_valid/resolve_valid or holding issue_ready low is the next liveness deadlock, with id_stage ECALL/control decode as the third candidate.",
+  "failing_checks": [
+    "simulation_timeout"
+  ],
+  "involved_files": [
+    "rtl/commit_unit.sv",
+    "rtl/execute_alu.sv",
+    "rtl/id_stage.sv",
+    "rtl/branch_predictor.sv",
+    "rtl/physical_register_file.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename modules, files, or any ports; keep the exact rv32i5 and submodule interface contract from the plan.",
+    "Preserve synchronous active-low reset and PC priority: reset > redirect > ECALL halt freeze > load-use stall > PC+4.",
+    "Maintain halt/retire timing: ECALL remains valid through the pipe; exactly one-cycle dbg_retire_valid at the commit edge; halted and exit_code=x10 appear on the same next edge and remain stable; never halted=0 with exit_code!=0.",
+    "Preserve steady-state CPI=1, exactly one-cycle load-use stall, and at most two bubbles on a taken control transfer; do not add extra wait states to mask the timeout.",
+    "Keep ready/valid discipline: one outstanding external request per interface, hold valid/address until ready, never abort an in-flight transaction, and keep the IF response epoch guard.",
+    "Branch resolve/mispredict and dbg_ooo events must remain single-pulse per real committed/issued instruction; invalid or squashed entries must not produce events."
+  ],
+  "evidence": "summary: 'Teacher TB failed (Simulation); failed checks: simulation_timeout'; detail: '教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。'; trace_mismatches: []; compile_error_tail: []; total_failed_checks: 1. Prior patches changed if_stage/icache/dcache/issue_queue/load_store_unit and rename_unit/reorder_buffer/rv32i5, but the same timeout remained.",
+  "previous_hypotheses": [
+    {
+      "attempt": 2,
+      "root_cause": "Only simulation_timeout is reported, with empty trace_mismatches and no compile tail, so this is a global liveness/deadlock rather than a wrong-data failure. The most likely cause is an undriven or misconnected ready/stop-fetch/commit-metadata net in the rv32i5 top-level integration, or an equivalent rename/ROB/issue backpressure loop: fetch or dispatch stops permanently and no ECALL reaches commi"
+    },
+    {
+      "attempt": 3,
+      "root_cause": "Only simulation_timeout is reported, with empty trace_mismatches, no failing suites and no compile tail, so this is a global liveness deadlock (no instruction ever retires, or the ECALL never reaches WB/commit), not a wrong-data bug. Because two earlier rounds already reworked the top-level integration and the rename/ROB/issue backpressure path and the freeze pattern did not change, the defect mos",
+      "patched_files": [
+        "rtl/dcache.sv",
+        "rtl/icache.sv",
+        "rtl/if_stage.sv",
+        "rtl/issue_queue.sv",
+        "rtl/load_store_unit.sv"
+      ]
+    },
+    {
+      "attempt": 4,
+      "root_cause": "Only simulation_timeout is reported, with no trace mismatches and no compile errors, so this is a global liveness/deadlock: the core never reaches a stable ECALL halt, either because the in-order ROB/rename path stops making forward progress (head never becomes commit-valid, squash/store-done/free-list/checkpoint stall) or because the ECALL entry never reaches commit_unit with bus_idle and therefo",
+      "patched_files": [
+        "rtl/rename_unit.sv",
+        "rtl/reorder_buffer.sv",
+        "rtl/rv32i5.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: simulation_timeout.",
+    "failed_checks": [
+      {
+        "name": "simulation_timeout",
+        "detail": "教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": null
+  }
+}

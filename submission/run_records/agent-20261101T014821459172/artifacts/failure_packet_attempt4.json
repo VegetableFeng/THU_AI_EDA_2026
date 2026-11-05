@@ -1,0 +1,63 @@
+{
+  "attempt": 4,
+  "category": "timeout",
+  "root_cause": "Only simulation_timeout is reported, with no trace mismatches and no compile errors, so this is a global liveness/deadlock: the core never reaches a stable ECALL halt, either because the in-order ROB/rename path stops making forward progress (head never becomes commit-valid, squash/store-done/free-list/checkpoint stall) or because the ECALL entry never reaches commit_unit with bus_idle and therefore halted/dbg_retire_valid are never produced. The unchanged failure after the cache/IF/issue/LSU patch points outside that batch.",
+  "failing_checks": [
+    "simulation_timeout"
+  ],
+  "involved_files": [
+    "rtl/reorder_buffer.sv",
+    "rtl/rename_unit.sv",
+    "rtl/commit_unit.sv",
+    "rtl/id_stage.sv",
+    "rtl/rv32i5.sv",
+    "rtl/execute_alu.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Never rename modules, files, ports, or change port widths from the plan interface contract.",
+    "Preserve synchronous active-low reset: reset only takes effect on the clk rising edge; during reset dmem_valid=0 and PC is held.",
+    "ECALL must remain valid through ID→EX→MEM→WB; the commit edge must produce exactly one dbg_retire_valid while halted/exit_code are still 0, and the next edge must set halted=1 with exit_code=x10. Never allow halted=0 with exit_code!=0; after halt all outputs and architectural state stay stable.",
+    "Exactly one single-cycle dbg_retire_valid per truly committed instruction (including load/store/branch/NOP/rd=x0/ECALL), at most one per cycle; squashed or invalid entries produce no retire event.",
+    "External request handshake must keep valid/address stable until ready, allow at most one outstanding request, not assume ready is always high, and not abort in-flight transactions; halt/flush may suppress the response but must not retract an issued request.",
+    "If any previously patched cache/IF/issue/LSU file is touched again, only revert it to the verified baseline; do not build another fix on top of the falsified cache/IF/LSU hypothesis."
+  ],
+  "evidence": "Failure brief: \"failed checks: simulation_timeout\"; \"trace_mismatches\": []; \"compile_error_tail\": []; \"failing_suites\": []; \"return_code\": null. Attempt 3 patched dcache.sv/icache.sv/if_stage.sv/issue_queue.sv/load_store_unit.sv and the failure mode stayed simulation_timeout, so the unresolved defect is likely in ROB/rename/commit/ECALL handling or top-level integration rather than those files.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The failure is a compile/elaboration break in the generated top level, rtl/rv32i5.sv, not a datapath logic bug. The file does not parse: syntax errors at lines 3221–3274 ('Invalid module instantiation', 'Invalid module item'), plus a duplicate loop variable ('i' already declared at 3312, first declared at 3077). Because the instantiation block is malformed, the three instances u_rob (reorder_buffe"
+    },
+    {
+      "attempt": 2,
+      "root_cause": "Only simulation_timeout is reported, with empty trace_mismatches and no compile tail, so this is a global liveness/deadlock rather than a wrong-data failure. The most likely cause is an undriven or misconnected ready/stop-fetch/commit-metadata net in the rv32i5 top-level integration, or an equivalent rename/ROB/issue backpressure loop: fetch or dispatch stops permanently and no ECALL reaches commi"
+    },
+    {
+      "attempt": 3,
+      "root_cause": "Only simulation_timeout is reported, with empty trace_mismatches, no failing suites and no compile tail, so this is a global liveness deadlock (no instruction ever retires, or the ECALL never reaches WB/commit), not a wrong-data bug. Because two earlier rounds already reworked the top-level integration and the rename/ROB/issue backpressure path and the freeze pattern did not change, the defect mos",
+      "patched_files": [
+        "rtl/dcache.sv",
+        "rtl/icache.sv",
+        "rtl/if_stage.sv",
+        "rtl/issue_queue.sv",
+        "rtl/load_store_unit.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: simulation_timeout.",
+    "failed_checks": [
+      {
+        "name": "simulation_timeout",
+        "detail": "教师 TB 仿真超过 60 s，RTL 可能未停机、死循环或握手无法完成。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": null
+  }
+}

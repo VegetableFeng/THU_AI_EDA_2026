@@ -1,0 +1,51 @@
+{
+  "attempt": 1,
+  "category": "simulation",
+  "root_cause": "功能与协议层面 TB 已全部通过（trace_mismatches 为空、failing_suites 为空、return_code 0），失败仅为实现代价超预算：面积 215820 vs 190000（+13.6%）、总功耗 0.0218 W vs 0.02 W（+9%）。根因是 RTL 过度冗余而非逻辑错误：(1) rename_unit 的 checkpoint 表按 16 个槽 × 32 位 spec_map 全量保存，且大向量每拍无条件重写、无写使能，面积与翻转率双高；(2) I/D-Cache 行数/组数配置超出需要；(3) ROB/IQ 表项保留了无消费方的宽字段（pc/insn 等只在提交头使用）；(4) ALU 操作数无隔离，无效拍仍驱动大位宽组合逻辑。需按缺陷清单做等价重构（加写使能、操作数隔离、降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段），同时保持 TB 全 PASS。",
+  "failing_checks": [
+    "ppa_power_budget",
+    "ppa_area_budget"
+  ],
+  "involved_files": [
+    "rtl/rename_unit.sv",
+    "rtl/icache.sv",
+    "rtl/dcache.sv",
+    "rtl/issue_queue.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/execute_alu.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "不得改名任何端口/模块/文件名；rv32i5 顶层接口与计划接口契约保持逐字一致，dbg_* 输出语义不变。",
+    "教师 TB 必须保持 PASS：trace_mismatches 为空、所有功能/时序检查通过、retire 事件流与架构状态不变（等价重构，非改功能）。",
+    "允许的改动范围仅限缺陷清单：大向量加写使能（仅在实际更新拍写）、ALU 操作数隔离、降低 checkpoint/表项冗余、减少 cache 行数、删除无消费方的宽字段；不得借机改变流水线时序或增加停顿。",
+    "复位语义保持：同步低有效，复位期间 dmem_valid=0，PC 优先级 复位 > 重定向 > ECALL 冻结 > load-use 暂停 > PC+4。",
+    "停机/退休时序保持：ECALL 有效值贯穿 ID→EX→MEM→WB，WB/提交沿产生一次单拍 dbg_retire_valid，下一沿 halted=1 且 exit_code=x10；halted 后所有输出与架构状态冻结；每拍至多退休一条、停顿不重复计数。",
+    "外部握手保持：同一接口至多一个在途请求，请求发出后 valid/addr 保持到 ready；halt/flush 只抑制响应（epoch 门），不得 abort 在途事务；运行中 imem_addr[1:0]=00。",
+    "if_stage 的 IF 响应 epoch 守卫（inflight_epoch != flush_epoch 丢弃响应并重新取指）必须保留，cache 行数缩减不得破坏该路径。",
+    "rename_unit.sv 中所有对 2D unpacked 数组的变量行索引写入必须改写为常量行索引的行译码形式（for r ... if (alloc_slot==r) ...），保持行为不变，避免 yosys read_verilog 挂死；已落地的 FIFO→bitmap 重构不得回退。"
+  ],
+  "evidence": "summary: \"failed checks: ppa_power_budget, ppa_area_budget\"；ppa_power_budget detail: \"总功耗 0.0218 W 超预算 0.02 W。按缺陷清单做等价重构：大向量每拍无条件重写加写使能、ALU 操作数隔离；TB 必须保持 PASS。\"；ppa_area_budget detail: \"面积 215820 超预算 190000.0（library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。\"；\"trace_mismatches\": []，\"failing_suites\": []，\"compile_error_tail\": []，\"return_code\": 0。",
+  "previous_hypotheses": [],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_power_budget, ppa_area_budget.",
+    "failed_checks": [
+      {
+        "name": "ppa_power_budget",
+        "detail": "总功耗 0.0218 W 超预算 0.02 W。按缺陷清单做等价重构：大向量每拍无条件重写加写使能、ALU 操作数隔离；TB 必须保持 PASS。"
+      },
+      {
+        "name": "ppa_area_budget",
+        "detail": "面积 215820 超预算 190000.0（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。"
+      }
+    ],
+    "total_failed_checks": 2,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

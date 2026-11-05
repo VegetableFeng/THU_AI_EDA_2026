@@ -1,0 +1,116 @@
+{
+  "attempt": 2,
+  "category": "mixed",
+  "root_cause": "The branch-resolution/mispredict path is incomplete: when a conditional branch predicted taken actually resolves not-taken, the core does not redirect to the fall-through path and flush the predicted-target fetch. The 2-instruction 64-iteration loops therefore never exit; x1 keeps counting iterations (0x1f1d=7965) and retired count scales as ~2*x1 (15931). The same missing not-taken resolve/mispredict event explains the missing dbg_bp_resolve evidence and the repeated 63 mispredicts. ECALL is never reached, so all halt waits time out; this is a control-transfer recovery bug, not a halt-commit or ready/valid handshake bug.",
+  "failing_checks": [
+    "t09_branch (halt timeout, imem_addr=0xdc)",
+    "t13_dft (halt timeout, imem_addr=0xdc)",
+    "cache_instruction_reuse (halt timeout, imem_addr=0x1c)",
+    "cache_instruction_reuse (x1 expected 0x40 got 0x1f1d)",
+    "predictor_training (halt timeout, imem_addr=0x1c)",
+    "predictor_training (x1 expected 0x40 got 0x1f1d)",
+    "predictor_training (missing branch-resolution evidence)",
+    "predictor_training (63 mispredicts, limit 8)",
+    "predictor_training (retired count expected 132 got 15931)",
+    "bench_crc32_64bytes (halt timeout, imem_addr=0x3c)",
+    "bench_array_sum64 (halt timeout, imem_addr=0x2c)",
+    "bench_branch_predict64 (halt timeout, imem_addr=0x2c)"
+  ],
+  "involved_files": [
+    "rtl/ex_stage.sv",
+    "rtl/rv32i5.sv",
+    "rtl/branch_predictor.sv",
+    "rtl/if_stage.sv",
+    "rtl/icache.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Never rename modules, files, or ports; preserve every interface in the plan contract.",
+    "Keep PC priority: reset > redirect on control transfer > ECALL halt freeze > load-use pause > PC+4.",
+    "Every valid control transfer, including a conditional branch that resolves not-taken, must produce exactly one single-cycle bp_resolve event; bp_mispredict must be asserted in the same cycle only when the predicted next PC differs from the actual next PC.",
+    "A predicted-taken but actually-not-taken branch must redirect the front end to pc+4 and flush all predicted-path instructions; predicted-target requests must not survive.",
+    "Preserve the branch-predictor training update from real resolve state; do not fabricate debug events with counters or PC patterns.",
+    "If the I-cache response epoch guard is added or repaired, latch inflight_epoch when the request is accepted and discard a response whose epoch does not match flush_epoch; do not advance PC or write IF/ID on a discarded response, and re-issue the fetch.",
+    "Preserve ECALL propagation ID→EX→MEM→WB and the halt/retire timing: one retire event per committed instruction, halted/exit_code committed on the following edge, outputs stable after halted.",
+    "Preserve external handshake behavior: hold valid/address until ready and never abort an in-flight cache request."
+  ],
+  "evidence": "cache_instruction_reuse and predictor_training both report x1 expected 0x40 got 0x1f1d; predictor_training reports retired count expected 132 got 15931 and 63 mispredicts. 0x1f1d = 7965 and 15931 ≈ 2*7965+1, exactly matching a runaway 2-instruction loop counter. Multiple tests freeze at different loop PCs (0x1c, 0x2c, 0x3c, 0xdc) while x1 and retired count keep advancing; predictor_training also reports missing branch-resolution evidence.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The top-level instantiation is out of sync with the stage modules it instantiates. It is a hybrid of a legacy ex_stage interface and the current one: rv32i5.sv drives u_ex_stage with bp_resolve_valid/bp_resolve_pc/bp_resolve_type/bp_resolve_taken/bp_resolve_target/bp_mispredict, which are not ports of ex_stage.sv, so elaboration fails. At the same time, the required input wb_data (reported as wb_w",
+      "patched_files": [
+        "rtl/rv32i5.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: t09_branch, t13_dft, cache_instruction_reuse, cache_instruction_reuse.",
+    "failed_checks": [
+      {
+        "name": "t09_branch",
+        "detail": "等待 halted 超时（1200 周期），imem_addr=0x000000dc"
+      },
+      {
+        "name": "t13_dft",
+        "detail": "等待 halted 超时（60000 周期），imem_addr=0x000000dc"
+      },
+      {
+        "name": "cache_instruction_reuse",
+        "detail": "等待 halted 超时（2000 周期），imem_addr=0x0000001c"
+      },
+      {
+        "name": "cache_instruction_reuse",
+        "detail": "x1 期望 0x00000040 得到 0x00001f1d"
+      },
+      {
+        "name": "predictor_training",
+        "detail": "等待 halted 超时（2000 周期），imem_addr=0x0000001c"
+      },
+      {
+        "name": "predictor_training",
+        "detail": "x1 期望 0x00000040 得到 0x00001f1d"
+      },
+      {
+        "name": "predictor_training",
+        "detail": "missing branch-resolution evidence"
+      },
+      {
+        "name": "predictor_training",
+        "detail": "trained taken loop has 63 mispredicts (limit 8)"
+      },
+      {
+        "name": "predictor_training",
+        "detail": "retired count expected 132 got 15931"
+      },
+      {
+        "name": "bench_crc32_64bytes",
+        "detail": "等待 halted 超时（20000 周期），imem_addr=0x0000003c"
+      },
+      {
+        "name": "bench_array_sum64",
+        "detail": "等待 halted 超时（5000 周期），imem_addr=0x0000002c"
+      },
+      {
+        "name": "bench_branch_predict64",
+        "detail": "等待 halted 超时（3000 周期），imem_addr=0x0000002c"
+      }
+    ],
+    "total_failed_checks": 13,
+    "trace_mismatches": [],
+    "failing_suites": [
+      "base",
+      "cache",
+      "predictor",
+      "performance_correctness"
+    ],
+    "compile_error_tail": [],
+    "hints": [
+      "HALT-TIMEOUT: 多个测试等到 halted 超时且 imem_addr 仍在变化；优先检查 ECALL 在 ID 级的识别、is_ecall 经 ID→EX→MEM→WB 的传递、WB 的 halted/exit_code 提交、IF/流水线 halt 冻结与同步复位。",
+      "FREEZE-PATTERN: 各测试冻结在不同 PC（0x0000001c, 0x0000002c, 0x0000003c, 0x000000dc）——若 PC 跑到程序镜像末尾之后，说明 halt/重定向未生效导致越界执行；若冻结在固定深度的不同测试点，仍优先排查停顿逻辑。",
+      "X-SIGNAL: freeze/timeout 或大面积数据错误时，优先怀疑悬空信号（X 传播）——iverilog 对未连接的实例端口和无驱动的内部 wire 静默产出 X。检查顶层每个实例的端口连接是否逐一对齐模块声明（尤其 halted/flush/flush_epoch 这类控制输入），以及内部声明是否有任何驱动。X 参与比较/选择会静默吞掉响应或数据。"
+    ],
+    "return_code": 1
+  }
+}

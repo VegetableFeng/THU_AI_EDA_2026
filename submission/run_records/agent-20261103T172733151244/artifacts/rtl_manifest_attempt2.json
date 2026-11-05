@@ -1,0 +1,69 @@
+{
+  "files": [
+    {
+      "path": "rtl/branch_predictor.sv",
+      "artifact": "project/rtl/branch_predictor.sv",
+      "bytes": 4333
+    },
+    {
+      "path": "rtl/commit_unit.sv",
+      "artifact": "project/rtl/commit_unit.sv",
+      "bytes": 3422
+    },
+    {
+      "path": "rtl/dcache.sv",
+      "artifact": "project/rtl/dcache.sv",
+      "bytes": 6996
+    },
+    {
+      "path": "rtl/execute_alu.sv",
+      "artifact": "project/rtl/execute_alu.sv",
+      "bytes": 6375
+    },
+    {
+      "path": "rtl/icache.sv",
+      "artifact": "project/rtl/icache.sv",
+      "bytes": 4752
+    },
+    {
+      "path": "rtl/id_stage.sv",
+      "artifact": "project/rtl/id_stage.sv",
+      "bytes": 10215
+    },
+    {
+      "path": "rtl/if_stage.sv",
+      "artifact": "project/rtl/if_stage.sv",
+      "bytes": 6827
+    },
+    {
+      "path": "rtl/issue_queue.sv",
+      "artifact": "project/rtl/issue_queue.sv",
+      "bytes": 12532
+    },
+    {
+      "path": "rtl/load_store_unit.sv",
+      "artifact": "project/rtl/load_store_unit.sv",
+      "bytes": 19098
+    },
+    {
+      "path": "rtl/physical_register_file.sv",
+      "artifact": "project/rtl/physical_register_file.sv",
+      "bytes": 3681
+    },
+    {
+      "path": "rtl/rename_unit.sv",
+      "artifact": "project/rtl/rename_unit.sv",
+      "bytes": 20886
+    },
+    {
+      "path": "rtl/reorder_buffer.sv",
+      "artifact": "project/rtl/reorder_buffer.sv",
+      "bytes": 11135
+    },
+    {
+      "path": "rtl/rv32i5.sv",
+      "artifact": "project/rtl/rv32i5.sv",
+      "bytes": 29905
+    }
+  ]
+}

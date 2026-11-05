@@ -1,0 +1,70 @@
+{
+  "attempt": 8,
+  "category": "simulation",
+  "root_cause": "Architectural execution is correct (no trace mismatches), so the only failure is the OoO overlap control/event path: while the older load is held in the LSU/dcache waiting on the external-memory handshake, no younger independent ALU instruction is accepted and completed. Since rename_unit, issue_queue and reorder_buffer were already patched without changing the symptom, the most likely defect is outside that batch: top-level rv32i5 composition couples the memory-wait/LSU-busy backpressure into global dispatch/issue (or fails to qualify dbg_ooo_issue/dbg_ooo_bypass from the real ALU issue+completion state). execute_alu's alu_complete_valid/rob_index drive and load_store_unit's outstanding-load indication must be checked so only the dependent load/commit path waits, not the independent ALU issue path.",
+  "failing_checks": [
+    "bench_ooo_overlap64"
+  ],
+  "involved_files": [
+    "rtl/rv32i5.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/execute_alu.sv",
+    "rtl/issue_queue.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/rename_unit.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Keep all file names, module names, and port lists exactly as in the interface contract; do not rename signals or modules.",
+    "Preserve the currently passing architectural behavior: no trace PC/instruction mismatches, exactly one retire event per committed instruction, correct reset/halt/ECALL sequencing.",
+    "Do not fake dbg_ooo_issue or dbg_ooo_bypass with a counter, constant, or PC pattern; derive them from the real issue-queue acceptance and ROB/execute completion state, at most one event per cycle.",
+    "Do not remove required load-path backpressure: an outstanding dmem request must hold valid/address until ready and its response must be consumed exactly once; only independent ALU dispatch/issue must proceed during the wait.",
+    "Keep alu_complete_valid, alu_complete_rob_index, alu_complete_prd and alu_complete_data driven and connected to both the ROB completion path and the issue-queue/PRF wakeup path.",
+    "If rename_unit is touched, preserve the constant-index checkpoint-save form and do not reintroduce variable-row-index writes into unpacked 2D arrays."
+  ],
+  "evidence": "failed_checks: [bench_ooo_overlap64], detail: \"OoO benchmark saw no bypass/overlap while the load was waiting\"; trace_mismatches: []; hint: \"发射队列是否真的允许 ALU 与 load 并行发射；ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）\". Prior patches to rename_unit, issue_queue and reorder_buffer left this same failure.",
+  "previous_hypotheses": [
+    {
+      "attempt": 5,
+      "root_cause": "The currently actionable failure is a synthesis/frontend hang in rtl/rename_unit.sv, not a simulation behavior bug: the checkpoint-save allocation loop writes a row of the 2D unpacked checkpoint array with a variable row index (`ckpt_map_nxt[alloc_slot][i] = spec_map_nxt[i]`), which makes yosys read_verilog explode. Bisection shows removing just those writes drops yosys from >15 s to 1.1 s. The fu",
+      "patched_files": [
+        "rtl/rename_unit.sv"
+      ]
+    },
+    {
+      "attempt": 6,
+      "root_cause": "The design still retires correctly (no trace mismatches and no timeout), so this is an issue/control performance bug rather than a datapath error. While an older load is held in the LSU waiting on the external-memory handshake, younger independent ALU instructions are never allowed to enter/leave the issue path and complete, so dbg_ooo_bypass can never qualify. The most likely location is the per-",
+      "patched_files": [
+        "rtl/rename_unit.sv"
+      ]
+    },
+    {
+      "attempt": 7,
+      "root_cause": "The OoO core retires correct results but never creates the expected overlap window: while the older load is held in the LSU/dcache waiting on external memory, the ROB/issue ready path is backpressured (or issue selection is still load/head-coupled), so no younger independent ALU instruction is allocated, accepted by the ALU, or marked complete. This is a stall/ready-valid control issue in the OoO ",
+      "patched_files": [
+        "rtl/issue_queue.sv",
+        "rtl/reorder_buffer.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: bench_ooo_overlap64.",
+    "failed_checks": [
+      {
+        "name": "bench_ooo_overlap64",
+        "detail": "OoO benchmark saw no bypass/overlap while the load was waiting"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [
+      "performance_correctness"
+    ],
+    "compile_error_tail": [],
+    "hints": [
+      "OOO-BYPASS: 乱序旁路要求存在更老未完成 load 等待外存时，独立的更年轻 ALU 指令仍从发射队列被功能单元接受并完成（dbg_ooo_issue/ooo_bypass 来自真实内部状态）。检查：①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）。"
+    ],
+    "return_code": 1
+  }
+}

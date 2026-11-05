@@ -1,0 +1,64 @@
+{
+  "attempt": 4,
+  "category": "simulation",
+  "root_cause": "No functional failure is reported: trace_mismatches and compile_error_tail are empty, and the only failed check is ppa_area_budget, with area 345,761 exceeding the 300,000 library-unit budget by about 15.3%. The overage is structural storage/mux redundancy: oversized checkpoint and queue/table entries, excessive cache row count, and wide pipeline fields without consumers. Prior edits to rename/IQ/LSU/cache paths only reduced area from 350,943 to 345,761, so the dominant remaining area is likely in un-audited table storage, especially the ROB, and in still-oversized checkpoint/cache arrays; this must be fixed by behavior-equivalent area refactoring, not by changing functionality.",
+  "failing_checks": [
+    "ppa_area_budget"
+  ],
+  "involved_files": [
+    "rtl/reorder_buffer.sv",
+    "rtl/rename_unit.sv",
+    "rtl/issue_queue.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/dcache.sv",
+    "rtl/icache.sv",
+    "rtl/rv32i5.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Do not rename any port, module, or file; all interfaces in the plan contract must remain unchanged.",
+    "The teacher TB must remain PASS; all functional/trace checks and debug retirement/branch/issue events must stay identical.",
+    "This is a PPA area-only repair: preserve reset, retire-pulse, halt/exit_code, stall/flush, forwarding, and ready/valid timing semantics exactly.",
+    "Any reduction of checkpoint/table entries or cache rows must be behavior-equivalent and must not change architectural state or external handshake behavior.",
+    "Do not repeat the previously falsified functional/pre-PPA root-cause fixes; reduce storage/mux area only where it is provably unconsumed or redundant."
+  ],
+  "evidence": "failure brief: \"stage\": \"simulation\"; \"failed_checks\": [{\"name\": \"ppa_area_budget\", \"detail\": \"面积 345761 超预算 300000（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。\"}]; \"trace_mismatches\": []; \"compile_error_tail\": []; \"return_code\": 0. Prior area was 350943, so only about 5182 library units were saved by earlier edits.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "该设计逻辑/仿真结果没有 trace mismatch，但两项 PPA 预算均超标：功耗 0.0763 W > 0.06 W，面积 350943 > 300000 library units。超预算的根因是结构实现层面的冗余与无效翻转：checkpoint/表项/宽寄存器数组过冗余且每拍无条件重写、缺少写使能或操作数隔离；cache 行数偏多；部分队列表项保留了无消费者的宽字段。需要进行行为等价重构，而不是修正功能数据通路。",
+      "patched_files": [
+        "rtl/dcache.sv",
+        "rtl/execute_alu.sv",
+        "rtl/icache.sv",
+        "rtl/issue_queue.sv",
+        "rtl/load_store_unit.sv",
+        "rtl/rename_unit.sv",
+        "rtl/rv32i5.sv"
+      ]
+    },
+    {
+      "attempt": 3,
+      "root_cause": "No functional trace mismatch: both failing checks are PPA budgets (power 0.0763 W > 0.06 W; area 350943 > 300000). The dominant structural defect is in rename_unit's checkpoint-save path: the allocation branch writes one row of the checkpoint map with a variable row index (ckpt_map_nxt[alloc_slot][i] = spec_map_nxt[i]), which forces synthesis to build a large variable-write mux/register structure ",
+      "patched_files": [
+        "rtl/rename_unit.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_area_budget.",
+    "failed_checks": [
+      {
+        "name": "ppa_area_budget",
+        "detail": "面积 345761 超预算 300000（ library 单位）。按缺陷清单做等价重构：降低 checkpoint/表项冗余、砍 cache 行数、去除无消费宽字段；TB 必须保持 PASS。"
+      }
+    ],
+    "total_failed_checks": 1,
+    "trace_mismatches": [],
+    "failing_suites": [],
+    "compile_error_tail": [],
+    "hints": [],
+    "return_code": 0
+  }
+}

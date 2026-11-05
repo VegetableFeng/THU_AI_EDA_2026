@@ -1,0 +1,68 @@
+{
+  "attempt": 3,
+  "category": "simulation",
+  "root_cause": "The OoO-overlap failure is in the issue/control path rather than in commit or data forwarding: the issue queue/dispatch logic still serializes functional-unit issue, so while an older load is outstanding/waiting on external memory, no younger independent ALU instruction is accepted by execute_alu and dbg_ooo_bypass never fires. The power overrun is an implementation/power issue: large queue/ROB/rename state vectors are rewritten every cycle without write enables, and execute_alu does not isolate operands when issue is invalid. Top-level completion/debug wiring must also be checked because alu_complete_valid/rob_index and the real bypass event must reach the ROB and dbg outputs. Separately, the known rename_unit variable-row write into an unpacked 2D array hangs yosys and must be made constant-index while preserving behavior.",
+  "failing_checks": [
+    "ppa_power_budget",
+    "bench_ooo_overlap64"
+  ],
+  "involved_files": [
+    "rtl/issue_queue.sv",
+    "rtl/execute_alu.sv",
+    "rtl/rv32i5.sv",
+    "rtl/reorder_buffer.sv",
+    "rtl/load_store_unit.sv",
+    "rtl/rename_unit.sv"
+  ],
+  "involved_files_is_full_set": false,
+  "repair_constraints": [
+    "Never rename any module, port, or file; preserve all interface contracts exactly as given for rv32i5, issue_queue, execute_alu, reorder_buffer, load_store_unit, and rename_unit.",
+    "The existing TB must remain PASS; do not change architectural results, retire PCs/instructions, halt/exit timing, or the single-cycle dbg_retire_valid behavior.",
+    "dbg_ooo_issue/dbg_ooo_bypass must be generated from real issue/completion state, at most one event per instruction/cycle; do not fabricate them with counters or PC-pattern detection.",
+    "Allow a younger independent integer ALU instruction to be selected and accepted while an older load is outstanding; verify alu_complete_valid and alu_complete_rob_index are driven and connected to the ROB, and that the issue queue does not globally stall ALU issue on load_complete_valid.",
+    "Add per-entry write enables / operand isolation for large vector state instead of unconditional per-cycle full-vector rewrites; ALU operands must be isolated when issue_valid is low, without changing functional behavior.",
+    "In rename_unit, fix the yosys hang by row-decoding writes so every write into an unpacked 2D array has a constant row index; audit all variable-index writes into ckpt_map_nxt and related 2D arrays, but do not modify the already-correct FIFO-to-bitmap refactor or any port/module names."
+  ],
+  "evidence": "summary: 'Teacher TB failed (Simulation); failed checks: ppa_power_budget, bench_ooo_overlap64'; ppa detail: '总功耗 0.0279 W 超预算 0.02 W...大向量每拍无条件重写加写使能、ALU 操作数隔离'; OOO detail: 'OoO benchmark saw no bypass/overlap while the load was waiting'; hint: '①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）'; repair state: 'yosys read_verilog hangs on rtl/rename_unit.sv' with variable-row-index writes into ckpt_map_nxt.",
+  "previous_hypotheses": [
+    {
+      "attempt": 1,
+      "root_cause": "The OoO overlap benchmark never observes a younger independent ALU instruction issuing/completing while an older load is waiting on external memory. The primary suspect is the issue-queue selection/wakeup path serializing ALU issue behind an outstanding load (or gating ALU issue on load completion), with a secondary suspect in the top-level completion/debug wiring: alu_complete_valid/rob_index mus",
+      "patched_files": [
+        "rtl/load_store_unit.sv",
+        "rtl/rv32i5.sv"
+      ]
+    },
+    {
+      "attempt": 2,
+      "root_cause": "Only the OoO-overlap observation fails while the program still retires correctly (no trace mismatches, no timeout, no other failing checks), so the design is functionally right but never exhibits/propagates the required 'younger independent ALU issues and completes while an older load waits on external memory' event. The two candidate mechanisms, in order, are: (1) the issue/wakeup path in issue_q",
+      "patched_files": [
+        "rtl/rv32i5.sv"
+      ]
+    }
+  ],
+  "failure_brief": {
+    "stage": "simulation",
+    "summary": "Teacher TB failed (Simulation); failed checks: ppa_power_budget, bench_ooo_overlap64.",
+    "failed_checks": [
+      {
+        "name": "ppa_power_budget",
+        "detail": "总功耗 0.0279 W 超预算 0.02 W。按缺陷清单做等价重构：大向量每拍无条件重写加写使能、ALU 操作数隔离；TB 必须保持 PASS。"
+      },
+      {
+        "name": "bench_ooo_overlap64",
+        "detail": "OoO benchmark saw no bypass/overlap while the load was waiting"
+      }
+    ],
+    "total_failed_checks": 2,
+    "trace_mismatches": [],
+    "failing_suites": [
+      "performance_correctness"
+    ],
+    "compile_error_tail": [],
+    "hints": [
+      "OOO-BYPASS: 乱序旁路要求存在更老未完成 load 等待外存时，独立的更年轻 ALU 指令仍从发射队列被功能单元接受并完成（dbg_ooo_issue/ooo_bypass 来自真实内部状态）。检查：①发射队列是否真的允许 ALU 与 load 并行发射（而非顺序单发射）；②ROB 完成握手信号（如 alu_complete_valid/rob_idx）是否有驱动且连到 ROB；③旁路事件是否被正确计数（每拍至多一个，来自发射逻辑而非计数器）。"
+    ],
+    "return_code": 1
+  }
+}

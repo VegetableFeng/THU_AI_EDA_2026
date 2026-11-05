@@ -1,0 +1,31 @@
+{
+  "task_name": "agent_rv32i5",
+  "rtl_path": "/mnt/f/MyDesktop/研一上/人工智能电路设计/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv",
+  "passed": false,
+  "stage": "simulation",
+  "timed_out": true,
+  "timeout_seconds": 300,
+  "return_code": null,
+  "stdout": "",
+  "stderr": "",
+  "trace": [],
+  "checks": [
+    {
+      "name": "synthesis_gate",
+      "detail": "yosys 综合报错：No latch inferred for signal `\\rename_unit.\\ready_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_live_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_pdst_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_old_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_rd_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_ctrl_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$eERROR: Latch inferred for signal `\\rename_unit.\\scan_slot' from always_comb process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'."
+    },
+    {
+      "name": "simulation_timeout",
+      "detail": "教师 TB 仿真超过 300 s，RTL 可能未停机、死循环或握手无法完成。"
+    }
+  ],
+  "wiring_check": {
+    "status": "failed",
+    "undriven": [],
+    "multi_driven": []
+  },
+  "synthesis_check": {
+    "status": "failed",
+    "reason": "yosys 综合报错：No latch inferred for signal `\\rename_unit.\\ready_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_live_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_pdst_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_old_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_rd_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'. | No latch inferred for signal `\\rename_unit.\\slot_ctrl_nxt' from process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$eERROR: Latch inferred for signal `\\rename_unit.\\scan_slot' from always_comb process `\\rename_unit.$proc$/mnt/f/MyDesktop/$e7$a0$94$e4$b8$80$e4$b8$8a/$e4$ba$ba$e5$b7$a5$e6$99$ba$e8$83$bd$e7$94$b5$e8$b7$af$e8$ae$be$e8$ae$a1/THU_AI_EDA_2026/runs/agent/agent-20261103T155135456546/artifacts/generated_attempt2.sv:0$2168'."
+  }
+}
