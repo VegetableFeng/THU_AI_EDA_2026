@@ -250,6 +250,18 @@ class RunContext:
         path = self._resolve_ref(name, directory=self.artifacts_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+        # 内容哈希清单：每个 artifact 写入时记录 sha256/大小/时间，供报告与追溯
+        import hashlib
+        from datetime import datetime, timezone
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        manifest = self.artifacts_dir / "manifest.jsonl"
+        with manifest.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ref": self.artifact_ref(path),
+                "sha256": digest,
+                "bytes": len(content.encode("utf-8")),
+                "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            }, ensure_ascii=False) + "\n")
         return self.artifact_ref(path)
 
     def write_json_artifact(self, name: str, payload: Any) -> str:
